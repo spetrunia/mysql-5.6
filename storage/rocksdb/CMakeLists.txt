@@ -53,6 +53,41 @@ if(HAVE_THREAD_LOCAL)
   ADD_DEFINITIONS(-DROCKSDB_SUPPORT_THREAD_LOCAL)
 endif()
 
+
+# The following list is intentionally missing these files that are #include'd
+# into others:
+#   range_locking/locktree/concurrent_tree.cc
+#   range_locking/locktree/treenode.cc
+#   util/omt.cc
+
+SET(ROCKSDB_RANGE_LOCKING_SOURCES 
+  range_locking/locktree/keyrange.cc
+  range_locking/locktree/keyrange.h
+  range_locking/locktree/txnid_set.h
+  range_locking/locktree/range_buffer.cc
+  range_locking/locktree/locktree.h
+  range_locking/locktree/treenode.h
+  range_locking/locktree/wfg.cc
+  range_locking/locktree/lock_request.cc
+  range_locking/locktree/locktree.cc
+  range_locking/locktree/range_buffer.h
+  range_locking/locktree/manager.cc
+  range_locking/locktree/wfg.h
+  range_locking/locktree/txnid_set.cc
+  range_locking/locktree/lock_request.h
+  range_locking/locktree/concurrent_tree.h
+)
+
+SET(ROCKSDB_RANGE_LOCKING_DEPS_SOURCES
+  range_locking/util/dbt.cc
+  range_locking/util/memarena.cc
+  range_locking/standalone_port.cc
+)
+
+INCLUDE_DIRECTORIES(range_locking)
+INCLUDE_DIRECTORIES(range_locking/portability)
+
+
 SET(ROCKSDB_SOURCES
   ha_rocksdb.cc ha_rocksdb.h ha_rocksdb_proto.h
   logger.h
@@ -74,6 +109,8 @@ SET(ROCKSDB_SOURCES
   rdb_threads.cc rdb_threads.h
   nosql_access.cc nosql_access.h
   ${ROCKSDB_LIB_SOURCES}
+  ${ROCKSDB_RANGE_LOCKING_SOURCES}
+  ${ROCKSDB_RANGE_LOCKING_DEPS_SOURCES}
 )
 
 IF(WITH_FB_TSAN)
