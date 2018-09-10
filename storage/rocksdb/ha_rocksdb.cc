@@ -683,6 +683,8 @@ static uint32_t rocksdb_select_bypass_debug_row_delay = 0;
 static unsigned long long  // NOLINT(runtime/int)
     rocksdb_select_bypass_multiget_min = 0;
 
+static my_bool rocksdb_use_range_locking = 0;
+
 std::atomic<uint64_t> rocksdb_row_lock_deadlocks(0);
 std::atomic<uint64_t> rocksdb_row_lock_wait_timeouts(0);
 std::atomic<uint64_t> rocksdb_snapshot_conflict_errors(0);
@@ -2085,6 +2087,11 @@ static MYSQL_SYSVAR_BOOL(error_on_suboptimal_collation,
                          "collation is used",
                          nullptr, nullptr, TRUE);
 
+static MYSQL_SYSVAR_BOOL(use_range_locking, rocksdb_use_range_locking,
+                         PLUGIN_VAR_OPCMDARG | PLUGIN_VAR_READONLY,
+                         "Use Range Locking (NEW, incomplete yet)",
+                         nullptr, nullptr, FALSE);
+
 static MYSQL_SYSVAR_BOOL(
     enable_insert_with_update_caching,
     rocksdb_enable_insert_with_update_caching, PLUGIN_VAR_OPCMDARG,
@@ -2307,7 +2314,7 @@ static struct st_mysql_sys_var *rocksdb_system_variables[] = {
     MYSQL_SYSVAR(max_manual_compactions),
     MYSQL_SYSVAR(manual_compaction_threads),
     MYSQL_SYSVAR(rollback_on_timeout),
-
+    MYSQL_SYSVAR(use_range_locking),
     MYSQL_SYSVAR(enable_insert_with_update_caching),
     MYSQL_SYSVAR(trace_block_cache_access),
 
@@ -5551,6 +5558,12 @@ static int rocksdb_init_func(void *const p) {
     rdb_log_status_error(status, "Error opening instance");
     DBUG_RETURN(HA_EXIT_FAILURE);
   }
+  rdb->use_range_locking= rocksdb_use_range_locking; // psergey
+  if (rocksdb_use_range_locking)
+    sql_print_information("RocksDB: USING NEW RANGE LOCKING");
+  else
+    sql_print_information("RocksDB: USING POINT LOCKING");
+
   cf_manager.init(std::move(cf_options_map), &cf_handles);
 
   // NO_LINT_DEBUG
