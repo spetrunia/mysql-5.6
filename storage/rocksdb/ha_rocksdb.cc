@@ -4904,6 +4904,28 @@ static int rocksdb_start_tx_and_assign_read_view(
   return HA_EXIT_SUCCESS;
 }
 
+
+static void
+rocksdb_kill_connection(handlerton* hton,
+                       THD* thd)
+{
+  //TODO: db_env->kill_waiter(db_env, thd);
+  // locktree_manager::kill_waiter(void *extra)
+  Rdb_transaction *const tx = get_tx_from_thd(thd);
+
+  // tx can be zero if that thread doesn't have a RocksDB transaction
+  // TODO: how do we know if things that are done in  this function are
+  // thread-safe? e.g. the transaction doesn't disappear while execution
+  // is right on this line?
+  if (tx && !tx->is_writebatch_trx())
+  {
+    Rdb_transaction_impl *tx_impl= (Rdb_transaction_impl*) tx;
+    const rocksdb::Transaction *rdb_trx = tx_impl->get_rdb_trx();
+    rdb->KillLockWait((void*)rdb_trx->GetID());
+  }
+}
+
+
 static int rocksdb_start_tx_with_shared_read_view(
     handlerton *const hton,    /*!< in: RocksDB handlerton */
     THD *const thd,            /*!< in: MySQL thread handle of the
@@ -5251,6 +5273,8 @@ static int rocksdb_init_func(void *const p) {
   rocksdb_hton->update_table_stats = rocksdb_update_table_stats;
   rocksdb_hton->flush_logs = rocksdb_flush_wal;
   rocksdb_hton->handle_single_table_select = rocksdb_handle_single_table_select;
+
+  rocksdb_hton->kill_connection= rocksdb_kill_connection;
 
   rocksdb_hton->flags = HTON_TEMPORARY_NOT_SUPPORTED |
                         HTON_SUPPORTS_EXTENDED_KEYS | HTON_CAN_RECREATE;
