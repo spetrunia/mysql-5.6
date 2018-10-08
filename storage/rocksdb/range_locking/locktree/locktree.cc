@@ -521,12 +521,40 @@ bool locktree::sto_try_release(TXNID txnid) {
     return released;
 }
 
+
 // release all of the locks for a txnid whose endpoints are pairs
 // in the given range buffer.
-void locktree::release_locks(TXNID txnid, const range_buffer *ranges) {
+void locktree::release_locks(TXNID txnid, const range_buffer *ranges,
+                             bool all_trx_locks_hint) {
     // try the single txn optimization. if it worked, then all of the
     // locks are already released, otherwise we need to do it here.
-    bool released = sto_try_release(txnid);
+    bool released;
+    if (all_trx_locks_hint)
+    {
+        // This will release all of the locks the transaction is holding
+        released = sto_try_release(txnid);
+    }
+    else
+    {
+        /*
+          psergey: we are asked to release *Some* of the locks the transaction
+          is holding. 
+          We could try doing that without leaving the STO mode, but right now,
+          the easiest way is to exit the STO mode and let the non-STO code path
+          handle it.
+        */
+        if (toku_unsafe_fetch(m_sto_txnid) != TXNID_NONE) {
+            // check the bit again with a prepared locked keyrange,
+            // which protects the optimization bits and rangetree data
+            concurrent_tree::locked_keyrange lkr;
+            lkr.prepare(m_rangetree);
+            if (m_sto_txnid != TXNID_NONE) {
+                sto_end_early(&lkr);
+            }
+            lkr.release();
+        }
+        released = false;
+    }
     if (!released) {
         range_buffer::iterator iter(ranges);
         range_buffer::iterator::record rec;
