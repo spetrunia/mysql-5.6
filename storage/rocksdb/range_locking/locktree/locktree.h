@@ -296,7 +296,7 @@ namespace toku {
                 const DBT *left_key, const DBT *right_key, txnid_set *conflicts);
 
         // effect: Release all of the lock ranges represented by the range buffer for a txnid.
-        void release_locks(TXNID txnid, const range_buffer *ranges);
+        void release_locks(TXNID txnid, const range_buffer *ranges, bool all_trx_locks_hint= false);
 
         // effect: Runs escalation on this locktree
         void escalate(lt_escalate_cb after_escalate_callback, void *extra);
