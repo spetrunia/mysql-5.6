@@ -2709,6 +2709,10 @@ class Rdb_transaction {
   virtual void release_lock(rocksdb::ColumnFamilyHandle *const column_family,
                             const std::string &rowkey) = 0;
 
+  virtual rocksdb::Status lock_range(rocksdb::ColumnFamilyHandle *const cf,
+                                     const rocksdb::Slice &start,
+                                     const rocksdb::Slice &end) = 0;
+
   virtual bool prepare(const rocksdb::TransactionName &name) = 0;
 
   bool commit_or_rollback() {
@@ -3294,6 +3298,12 @@ class Rdb_transaction_impl : public Rdb_transaction {
 
   virtual bool is_writebatch_trx() const override { return false; }
 
+  rocksdb::Status lock_range(rocksdb::ColumnFamilyHandle *const cf,
+                             const rocksdb::Slice &start,
+                             const rocksdb::Slice &end) override
+  {
+    return m_rocksdb_tx->GetRangeLock(cf, start, end);
+  }
  private:
   void release_tx(void) {
     // We are done with the current active transaction object.  Preserve it
@@ -3710,6 +3720,13 @@ class Rdb_writebatch_impl : public Rdb_transaction {
   void release_lock(rocksdb::ColumnFamilyHandle *const column_family,
                     const std::string &rowkey) override {
     // Nothing to do here since we don't hold any row locks.
+  }
+
+  rocksdb::Status lock_range(rocksdb::ColumnFamilyHandle *const cf,
+                             const rocksdb::Slice &start,
+                             const rocksdb::Slice &end) override
+  {
+    return rocksdb::Status::OK();
   }
 
   void rollback() override {
@@ -8301,6 +8318,62 @@ int ha_rocksdb::index_read_map(uchar *const buf, const uchar *const key,
   DBUG_RETURN(index_read_map_impl(buf, key, keypart_map, find_flag, nullptr));
 }
 
+
+void ha_rocksdb::set_range_lock(Rdb_transaction *tx,
+                                const Rdb_key_def &kd, 
+                                const enum ha_rkey_function &find_flag,
+                                const rocksdb::Slice &slice,
+                                const key_range *const end_key)
+{
+  // We have 'slice' with start_slice.
+  rocksdb::Slice end_slice;
+  uchar end_slice_buf[MAX_KEY_LENGTH];
+
+  if (m_lock_rows != RDB_LOCK_WRITE || !rocksdb_use_range_locking) {
+    return;
+  }
+  fprintf(stderr, "Setting a range lock\n");
+
+  if (find_flag == HA_READ_KEY_EXACT) {
+    end_slice= slice;
+  }
+  else
+  if (find_flag == HA_READ_PREFIX_LAST) {
+    /*
+      We have made the kd.successor(m_sk_packed_tuple) call above.
+
+      The slice is at least Rdb_key_def::INDEX_NUMBER_SIZE bytes long.
+    */
+    memcpy(end_slice_buf, slice.data(), slice.size());
+    kd.successor(end_slice_buf, slice.size());
+    end_slice= rocksdb::Slice((const char*)end_slice_buf, slice.size());
+  }
+  else 
+  if (end_key) {
+    uchar pack_buffer[MAX_KEY_LENGTH];
+    uint end_slice_size=
+        kd.pack_index_tuple(table, pack_buffer, end_slice_buf,
+                            end_key->key, end_key->keypart_map);
+
+    end_slice= rocksdb::Slice(reinterpret_cast<char *>(end_slice_buf),
+                              end_slice_size);
+  }
+  else
+  {
+    /*
+      On range scan without any end key condition, there is no
+      eq cond, and eq cond length is the same as index_id size (4 bytes).
+      Example1: id1 BIGINT, id2 INT, id3 BIGINT, PRIMARY KEY (id1, id2, id3)
+       WHERE id1>=1 AND id2 >= 2 and id2 <= 5 => eq_cond_len= 4
+    */
+    uint end_slice_size;
+    // TODO: or this should be kd.get_index_number() ? 
+    kd.get_infimum_key(end_slice_buf, &end_slice_size);
+    end_slice= rocksdb::Slice((char*)end_slice_buf, end_slice_size);
+  }
+  tx->lock_range(kd.get_cf(), slice, end_slice);
+}
+
 /*
    See storage/rocksdb/rocksdb-range-access.txt for description of how MySQL
    index navigation commands are converted into RocksDB lookup commands.
@@ -8438,6 +8511,8 @@ int ha_rocksdb::index_read_map_impl(uchar *const buf, const uchar *const key,
       rc = HA_ERR_QUERY_INTERRUPTED;
       break;
     }
+    //psergey:
+    set_range_lock(tx, kd, find_flag, slice, end_key);
     /*
       This will open the iterator and position it at a record that's equal or
       greater than the lookup tuple.
@@ -10324,7 +10399,6 @@ void ha_rocksdb::setup_scan_iterator(const Rdb_key_def &kd,
   Rdb_transaction *const tx = get_or_create_tx(table->in_use);
 
   bool skip_bloom = true;
-
   const rocksdb::Slice eq_cond(slice->data(), eq_cond_len);
   // The size of m_scan_it_lower_bound (and upper) is technically
   // max_packed_sk_len as calculated in ha_rocksdb::alloc_key_buffers.  Rather
