@@ -1,0 +1,95 @@
+#
+#  Range locking tests.
+#
+
+--source include/have_rocksdb.inc
+--enable_connect_log
+
+
+show variables like 'rocksdb_use_range_locking';
+
+# Test 1: see that ranges are indeed lockied.
+
+create table t1 (
+  pk int primary key,
+  a int
+) engine=rocksdb;
+
+insert into t1 values
+(10,10),(20,20),(30,30);
+
+connect (con1,localhost,root,,);
+connect (con2,localhost,root,,);
+
+--echo ### Test: check that range lock inhibits a point lock
+connection con1;
+begin;
+select * from t1 where pk between 5 and 25 for update;
+
+connection con2;
+--error ER_LOCK_WAIT_TIMEOUT
+insert into t1 values (15,15);
+
+connection con1;
+rollback;
+
+--echo ## Test: check that range lock inhibits another range lock
+--echo ##  (It should not, but currently it does)
+connection con1;
+begin;
+select * from t1 where pk between 5 and 25 for update;
+
+connection con2;
+begin;
+--error ER_LOCK_WAIT_TIMEOUT
+select * from t1 where pk between 15 and 35 for update;
+rollback;
+
+connection con1;
+rollback;
+
+--echo ## Test: check that regular read does not get a range lock
+connection con1;
+begin;
+select * from t1 where pk between 5 and 25;
+
+connection con2;
+begin;
+# This must not block
+select * from t1 where pk between 15 and 35 for update;
+rollback;
+
+connection con1;
+rollback;
+
+--echo ## Test that locks are not released when a statement in the transaction
+create table t2 (
+  pk int primary key,
+  a int,
+  unique key(a)
+) engine=rocksdb;
+
+insert into t2 values (1,1),(2,2);
+
+begin;
+insert into t2 values (3,3);
+--error ER_DUP_ENTRY
+insert into t2 values (10,2);
+
+connection con2;
+begin;
+# This must time out:
+--error ER_LOCK_WAIT_TIMEOUT
+select * from t2 where pk=3 for update;
+
+rollback;
+connection con1;
+rollback;
+drop table t2;
+
+# Cleanup
+connection default;
+disconnect con1;
+disconnect con2;
+drop table t1;
+
