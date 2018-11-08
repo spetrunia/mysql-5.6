@@ -683,6 +683,12 @@ static uint32_t rocksdb_select_bypass_debug_row_delay = 0;
 static unsigned long long  // NOLINT(runtime/int)
     rocksdb_select_bypass_multiget_min = 0;
 
+// Range locking: how much memory to use.
+//  (note that this is different from rocksdb_max_row_locks as
+//   that one is a hard per-thread count limit, and this one is a 
+//   global memory limit)
+static ulong rocksdb_max_lock_memory;
+
 static my_bool rocksdb_use_range_locking = 0;
 
 std::atomic<uint64_t> rocksdb_row_lock_deadlocks(0);
@@ -2092,6 +2098,13 @@ static MYSQL_SYSVAR_BOOL(use_range_locking, rocksdb_use_range_locking,
                          "Use Range Locking (NEW, incomplete yet)",
                          nullptr, nullptr, FALSE);
 
+static MYSQL_SYSVAR_ULONG(
+    max_lock_memory, rocksdb_max_lock_memory,
+    PLUGIN_VAR_RQCMDARG | PLUGIN_VAR_READONLY,
+    "Max Lock Memory when using Range Locking (like in TokuDB)",
+    nullptr, nullptr, 16*1024*1024 /* default value */, 1024 /* min value */,
+    ULONG_MAX /* max value */, 0);
+
 static MYSQL_SYSVAR_BOOL(
     enable_insert_with_update_caching,
     rocksdb_enable_insert_with_update_caching, PLUGIN_VAR_OPCMDARG,
@@ -2315,6 +2328,7 @@ static struct st_mysql_sys_var *rocksdb_system_variables[] = {
     MYSQL_SYSVAR(manual_compaction_threads),
     MYSQL_SYSVAR(rollback_on_timeout),
     MYSQL_SYSVAR(use_range_locking),
+    MYSQL_SYSVAR(max_lock_memory),
     MYSQL_SYSVAR(enable_insert_with_update_caching),
     MYSQL_SYSVAR(trace_block_cache_access),
 
@@ -5599,9 +5613,19 @@ static int rocksdb_init_func(void *const p) {
     rdb_log_status_error(status, "Error opening instance");
     DBUG_RETURN(HA_EXIT_FAILURE);
   }
+
+  //psergey-todo: this implies that TransactionDB::Open() call above did not
+  // acquire any locks (if it did, we wont be able switch to another locking
+  // system):
   rdb->use_range_locking= rocksdb_use_range_locking; // psergey
+  
   if (rocksdb_use_range_locking)
+  {
+    //psergey-todo: this is ugly: 
+    rdb->get_range_lock_manager()->set_max_lock_memory(rocksdb_max_lock_memory);
     sql_print_information("RocksDB: USING NEW RANGE LOCKING");
+    sql_print_information("RocksDB: Max lock memory=%lu", rocksdb_max_lock_memory);
+  }
   else
     sql_print_information("RocksDB: USING POINT LOCKING");
 
@@ -13741,6 +13765,32 @@ static void show_rocksdb_stall_vars(THD *thd, SHOW_VAR *var, char *buff) {
   var->value = reinterpret_cast<char *>(&rocksdb_stall_status_variables);
 }
 
+//
+// psergey: lock tree escalation count status variable.
+//
+static longlong rocksdb_locktree_escalation_count=1234;
+
+static SHOW_VAR rocksdb_locktree_status_variables[] = {
+    DEF_STATUS_VAR_FUNC("escalation_count",
+                        &rocksdb_locktree_escalation_count, SHOW_LONGLONG),
+    // end of the array marker
+    {NullS, NullS, SHOW_LONG}};
+
+static SHOW_VAR rocksdb_empty_status_variables[] = {
+    {NullS, NullS, SHOW_LONG}};
+
+static void show_rocksdb_locktree_vars(THD *thd, SHOW_VAR *var, char *buff) {
+  var->type = SHOW_ARRAY;
+  if (rocksdb_use_range_locking)
+  {
+    //TODO: 
+    rocksdb_locktree_escalation_count= rdb->get_range_lock_manager()->get_escalation_count();
+    var->value = reinterpret_cast<char *>(&rocksdb_locktree_status_variables);
+  }
+  else
+    var->value = reinterpret_cast<char *>(&rocksdb_empty_status_variables);
+}
+
 static SHOW_VAR rocksdb_status_vars[] = {
     DEF_STATUS_VAR(block_cache_miss),
     DEF_STATUS_VAR(block_cache_hit),
@@ -13851,6 +13901,8 @@ static SHOW_VAR rocksdb_status_vars[] = {
     // deterministic as quick sort is not stable
     {"rocksdb", reinterpret_cast<char *>(&show_myrocks_vars), SHOW_FUNC},
     {"rocksdb_stall", reinterpret_cast<char *>(&show_rocksdb_stall_vars),
+     SHOW_FUNC},
+    {"rocksdb_locktree", reinterpret_cast<char *>(show_rocksdb_locktree_vars),
      SHOW_FUNC},
     {NullS, NullS, SHOW_LONG}};
 
