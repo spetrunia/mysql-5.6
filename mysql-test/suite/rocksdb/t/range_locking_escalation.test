@@ -34,5 +34,5 @@ select count(*) from t1;
 #disconnect con1;
 show status like 'rocksdb_locktree_escalation_count';
 
-drop table t1;
+drop table t0,t1;
 
