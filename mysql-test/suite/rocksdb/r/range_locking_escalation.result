@@ -24,4 +24,4 @@ count(*)
 show status like 'rocksdb_locktree_escalation_count';
 Variable_name	Value
 rocksdb_locktree_escalation_count	3332
-drop table t1;
+drop table t0,t1;
