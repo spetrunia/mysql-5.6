@@ -935,6 +935,7 @@ rocksdb_manual_wal_flush	ON
 rocksdb_master_skip_tx_api	OFF
 rocksdb_max_background_jobs	2
 rocksdb_max_latest_deadlocks	5
+rocksdb_max_lock_memory	16777216
 rocksdb_max_log_file_size	0
 rocksdb_max_manifest_file_size	1073741824
 rocksdb_max_manual_compactions	10
@@ -997,6 +998,7 @@ rocksdb_use_clock_cache	OFF
 rocksdb_use_direct_io_for_flush_and_compaction	OFF
 rocksdb_use_direct_reads	OFF
 rocksdb_use_fsync	OFF
+rocksdb_use_range_locking	OFF
 rocksdb_validate_tables	1
 rocksdb_verify_row_debug_checksums	OFF
 rocksdb_wal_bytes_per_sync	0
