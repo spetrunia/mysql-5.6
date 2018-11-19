@@ -3,3 +3,6 @@ rocksdb_write_policy=write_committed
 
 [write_prepared]
 rocksdb_write_policy=write_prepared
+
+[range_locking]
+rocksdb_use_range_locking=1
