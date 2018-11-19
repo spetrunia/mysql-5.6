@@ -2485,6 +2485,9 @@ class Rdb_transaction {
   bool m_is_delayed_snapshot = false;
   bool m_is_two_phase = false;
 
+  // Last known TransactionID of the underlying transaction, or UINT_MAX
+  //  for write batches. See kill_lock_wait_by_thd.
+  uint64_t m_last_trx_id;
  private:
   /*
     Number of write operations this transaction had when we took the last
@@ -3277,6 +3280,8 @@ class Rdb_transaction {
     s_tx_list.erase(this);
     RDB_MUTEX_UNLOCK_CHECK(s_tx_list_mutex);
   }
+
+  static void kill_lock_wait_by_thd(THD *thd);
 };
 
 /*
@@ -3590,6 +3595,8 @@ class Rdb_transaction_impl : public Rdb_transaction {
         rdb->BeginTransaction(write_opts, tx_opts, m_rocksdb_reuse_tx);
     m_rocksdb_reuse_tx = nullptr;
 
+    m_last_trx_id = m_rocksdb_tx->GetID();
+
     m_read_opts = rocksdb::ReadOptions();
 
     set_initial_savepoint();
@@ -3864,6 +3871,7 @@ class Rdb_writebatch_impl : public Rdb_transaction {
       : Rdb_transaction(thd), m_batch(nullptr) {
     m_batch = new rocksdb::WriteBatchWithIndex(rocksdb::BytewiseComparator(), 0,
                                                true);
+    m_last_trx_id= UINT64_MAX;
   }
 
   virtual ~Rdb_writebatch_impl() override {
@@ -4936,24 +4944,32 @@ static int rocksdb_start_tx_and_assign_read_view(
 }
 
 
-static void
-rocksdb_kill_connection(handlerton* hton,
-                       THD* thd)
+void rocksdb_kill_connection(handlerton* hton, THD* thd)
 {
-  //TODO: db_env->kill_waiter(db_env, thd);
-  // locktree_manager::kill_waiter(void *extra)
+  Rdb_transaction::kill_lock_wait_by_thd(thd);
+}
+
+
+void Rdb_transaction::kill_lock_wait_by_thd(THD *thd)
+{
+  /*
+    Piggy-back on s_tx_list_mutex to avoid the situtation where the transaction
+    that we are trying to kill finishes after we got it from get_tx_from_thd()
+    but before we get its m_last_trx_id.
+
+    The lock wait may be gone, and tx->m_rocksdb_tx may change while we are
+    running the code lines below. This is why we use m_last_trx_id.  We may
+    end up with an identifier of a transaction that is already gone, but this
+    won't be a problem.
+  */
+  RDB_MUTEX_LOCK_CHECK(Rdb_transaction::s_tx_list_mutex);
   Rdb_transaction *const tx = get_tx_from_thd(thd);
 
-  // tx can be zero if that thread doesn't have a RocksDB transaction
-  // TODO: how do we know if things that are done in  this function are
-  // thread-safe? e.g. the transaction doesn't disappear while execution
-  // is right on this line?
-  if (tx && !tx->is_writebatch_trx())
+  if (tx && tx->m_last_trx_id != UINT64_MAX)
   {
-    Rdb_transaction_impl *tx_impl= (Rdb_transaction_impl*) tx;
-    const rocksdb::Transaction *rdb_trx = tx_impl->get_rdb_trx();
-    rdb->KillLockWait((void*)rdb_trx->GetID());
+    rdb->KillLockWait((void*)tx->m_last_trx_id);
   }
+  RDB_MUTEX_UNLOCK_CHECK(Rdb_transaction::s_tx_list_mutex);
 }
 
 
