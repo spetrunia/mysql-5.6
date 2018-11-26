@@ -1496,8 +1496,16 @@ static int rdb_i_s_lock_info_fill_table(
   for (const auto &lock : lock_info) {
     const uint32_t cf_id = lock.first;
     const auto &key_lock_info = lock.second;
-    const auto key_hexstr = rdb_hexdump(key_lock_info.key.c_str(),
-                                        key_lock_info.key.length(), FN_REFLEN);
+    auto key_hexstr = rdb_hexdump(key_lock_info.key.c_str(),
+                                  key_lock_info.key.length(), FN_REFLEN);
+    if (key_lock_info.has_key2)
+    {
+      const auto key2_hexstr = rdb_hexdump(key_lock_info.key2.c_str(),
+                                           key_lock_info.key2.length(), 
+                                           FN_REFLEN - key_hexstr.size() - 3);
+      key_hexstr.append(" - ");
+      key_hexstr.append(key2_hexstr);
+    }
 
     for (const auto &id : key_lock_info.ids) {
       tables->table->field[RDB_LOCKS_FIELD::COLUMN_FAMILY_ID]->store(cf_id,
