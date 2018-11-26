@@ -320,7 +320,9 @@ namespace toku {
         // abstraction and code complexity. It is still fairly abstract
         // since the lock_request object is opaque 
         struct lt_lock_request_info *get_lock_request_info(void);
-
+        
+        typedef void (*dump_callback)(void *cdata, const DBT *left, const DBT *right, TXNID txnid);
+        void dump_locks(void *cdata, dump_callback cb);
     private:
         locktree_manager *m_mgr;
         DICTIONARY_ID m_dict_id;

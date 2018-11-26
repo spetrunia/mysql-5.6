@@ -412,6 +412,34 @@ int locktree::acquire_write_lock(TXNID txnid, const DBT *left_key, const DBT *ri
     return try_acquire_lock(true, txnid, left_key, right_key, conflicts, big_txn);
 }
 
+// typedef void (*dump_callback)(void *cdata, const DBT *left, const DBT *right, TXNID txnid);
+void locktree::dump_locks(void *cdata, dump_callback cb)
+{
+    concurrent_tree::locked_keyrange lkr;
+    keyrange range;
+    range.create(toku_dbt_negative_infinity(),
+                 toku_dbt_positive_infinity());
+
+    lkr.prepare(m_rangetree);
+    lkr.acquire(range);
+
+    GrowableArray<row_lock> all_locks;
+    all_locks.init();
+    iterate_and_get_overlapping_row_locks(&lkr, &all_locks);
+
+    const size_t n_locks = all_locks.get_size();
+    for (size_t i = 0; i < n_locks; i++) {
+        const row_lock lock = all_locks.fetch_unchecked(i);
+        (*cb)(cdata, 
+              lock.range.get_left_key(), 
+              lock.range.get_right_key(), 
+              lock.txnid);
+    }
+    lkr.release();
+    all_locks.deinit();
+    range.destroy();
+}
+
 void locktree::get_conflicts(bool is_write_request,
                              TXNID txnid, const DBT *left_key, const DBT *right_key,
                              txnid_set *conflicts) {

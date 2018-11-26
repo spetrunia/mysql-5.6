@@ -75,3 +75,33 @@ connection default;
 disconnect con1;
 disconnect con2;
 drop table t1;
+#
+# Test INFORMATION_SCHEMA.lock_info in range-locking mode
+#
+create table t1 (
+pk int primary key,
+a int
+) engine=rocksdb;
+insert into t1 values
+(10,10),(20,20),(30,30);
+begin;
+select * from t1 where pk=10 for update;
+pk	a
+10	10
+select * from information_schema.rocksdb_locks;
+COLUMN_FAMILY_ID	TRANSACTION_ID	KEY	MODE
+0	15	000001078000000a	X
+delete from t1 where pk between 25 and 40;
+select * from information_schema.rocksdb_locks;
+COLUMN_FAMILY_ID	TRANSACTION_ID	KEY	MODE
+0	15	0000010780000019 - 0000010780000028	X
+0	15	000001078000000a	X
+rollback;
+begin;
+select * from t1 where pk between 2 and 9 for update;
+pk	a
+select * from information_schema.rocksdb_locks;
+COLUMN_FAMILY_ID	TRANSACTION_ID	KEY	MODE
+0	16	0000010780000002 - 0000010780000009	X
+rollback;
+drop table t1;
