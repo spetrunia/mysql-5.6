@@ -2102,7 +2102,7 @@ static MYSQL_SYSVAR_ULONG(
     max_lock_memory, rocksdb_max_lock_memory,
     PLUGIN_VAR_RQCMDARG | PLUGIN_VAR_READONLY,
     "Max Lock Memory when using Range Locking (like in TokuDB)",
-    nullptr, nullptr, 16*1024*1024 /* default value */, 1024 /* min value */,
+    nullptr, nullptr, 1024*1024*1024 /* default value */, 1024 /* min value */,
     ULONG_MAX /* max value */, 0);
 
 static MYSQL_SYSVAR_BOOL(
