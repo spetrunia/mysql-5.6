@@ -935,7 +935,7 @@ rocksdb_manual_wal_flush	ON
 rocksdb_master_skip_tx_api	OFF
 rocksdb_max_background_jobs	2
 rocksdb_max_latest_deadlocks	5
-rocksdb_max_lock_memory	16777216
+rocksdb_max_lock_memory	1073741824
 rocksdb_max_log_file_size	0
 rocksdb_max_manifest_file_size	1073741824
 rocksdb_max_manual_compactions	10
