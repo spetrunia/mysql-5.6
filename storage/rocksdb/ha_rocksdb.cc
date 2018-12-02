@@ -8372,7 +8372,6 @@ void ha_rocksdb::set_range_lock(Rdb_transaction *tx,
   if (m_lock_rows != RDB_LOCK_WRITE || !rocksdb_use_range_locking) {
     return;
   }
-  fprintf(stderr, "Setting a range lock\n");
 
   if (find_flag == HA_READ_KEY_EXACT) {
     end_slice= slice;
