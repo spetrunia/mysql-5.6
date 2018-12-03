@@ -90,7 +90,8 @@ public:
     //          or simply DB_LOCK_NOTGRANTED if the wait time expired.
     int wait(uint64_t wait_time_ms);
     int wait(uint64_t wait_time_ms, uint64_t killed_time_ms, int (*killed_callback)(void),
-             void (*lock_wait_callback)(void *, TXNID, TXNID) = nullptr);
+             void (*lock_wait_callback)(void *, TXNID, TXNID) = nullptr,
+             void *callback_arg= nullptr);
 
     // return: left end-point of the lock range
     const DBT *get_left_key(void) const;
@@ -114,6 +115,7 @@ public:
     static void retry_all_lock_requests(
         locktree *lt,
         void (*lock_wait_callback)(void *, TXNID, TXNID) = nullptr,
+        void *callback_arg= nullptr,
         void (*after_retry_test_callback)(void) = nullptr);
     static void retry_all_lock_requests_info(lt_lock_request_info *info, GrowableArray<TXNID> *collector);
 
@@ -202,7 +204,8 @@ public:
 
     // Report list of conflicts to lock wait callback.
     static void report_waits(GrowableArray<TXNID> *wait_conflicts,
-                             void (*lock_wait_callback)(void *, TXNID, TXNID));
+                             void (*lock_wait_callback)(void *, TXNID, TXNID),
+                             void *callback_arg);
     void add_conflicts_to_waits(txnid_set *conflicts, GrowableArray<TXNID> *wait_conflicts);
 
     void (*m_start_test_callback)(void);
