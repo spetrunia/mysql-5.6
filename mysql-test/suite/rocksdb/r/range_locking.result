@@ -90,18 +90,60 @@ pk	a
 10	10
 select * from information_schema.rocksdb_locks;
 COLUMN_FAMILY_ID	TRANSACTION_ID	KEY	MODE
-0	15	000001078000000a	X
+0	15	00000001078000000a	X
 delete from t1 where pk between 25 and 40;
 select * from information_schema.rocksdb_locks;
 COLUMN_FAMILY_ID	TRANSACTION_ID	KEY	MODE
-0	15	0000010780000019 - 0000010780000028	X
-0	15	000001078000000a	X
+0	15	000000010780000019 - 010000010780000028	X
+0	15	00000001078000000a	X
 rollback;
 begin;
+# The following will show a range lock on 2-9 and also a point lock on 10.
+# This is how things currently work.
 select * from t1 where pk between 2 and 9 for update;
 pk	a
 select * from information_schema.rocksdb_locks;
 COLUMN_FAMILY_ID	TRANSACTION_ID	KEY	MODE
-0	16	0000010780000002 - 0000010780000009	X
+0	16	00000001078000000a	X
+0	16	000000010780000002 - 010000010780000009	X
 rollback;
 drop table t1;
+#
+# MDEV-18104: MyRocks-Gap-Lock: range locking bounds are incorrect for multi-part keys
+#
+create table t0(a int);
+insert into t0 values (0),(1),(2),(3),(4),(5),(6),(7),(8),(9);
+create table t1 (
+kp1 int not null,
+kp2 int not null,
+a int,
+primary key(kp1, kp2)
+) engine=rocksdb;
+insert into t1 select 1, a, 1234 from t0;
+insert into t1 select 2, a, 1234 from t0;
+insert into t1 select 3, a, 1234 from t0;
+connect  con1,localhost,root,,;
+connection con1;
+begin;
+select * from t1 where kp1=2 for update;
+kp1	kp2	a
+2	0	1234
+2	1	1234
+2	2	1234
+2	3	1234
+2	4	1234
+2	5	1234
+2	6	1234
+2	7	1234
+2	8	1234
+2	9	1234
+connection default;
+# The lock on kp1=2 should inhibit the following INSERT:
+insert into t1 values ( 2,5,9999);
+ERROR HY000: Lock wait timeout exceeded; try restarting transaction: Timeout on index: test.t1.PRIMARY
+rollback;
+connection con1;
+rollback;
+connection default;
+disconnect con1;
+drop table t0,t1;

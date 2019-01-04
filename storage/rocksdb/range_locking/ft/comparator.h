@@ -44,7 +44,7 @@ Copyright (c) 2006, 2015, Percona and/or its affiliates. All rights reserved.
 
 #include "util/dbt.h"
 
-typedef int (*ft_compare_func)(DB *db, const DBT *a, const DBT *b);
+typedef int (*ft_compare_func)(DB *db, void *arg, const DBT *a, const DBT *b);
 
 int toku_keycompare(const void *key1, uint32_t key1len, const void *key2, uint32_t key2len);
 
@@ -57,8 +57,9 @@ namespace toku {
     // that points may be positive or negative infinity.
 
     class comparator {
-        void init(ft_compare_func cmp, DESCRIPTOR desc, uint8_t memcmp_magic) {
+        void init(ft_compare_func cmp, void *cmp_arg, DESCRIPTOR desc, uint8_t memcmp_magic) {
             _cmp = cmp;
+            _cmp_arg= cmp_arg;
             _fake_db->cmp_descriptor = desc;
             _memcmp_magic = memcmp_magic;
         }
@@ -67,9 +68,9 @@ namespace toku {
         // This magic value is reserved to mean that the magic has not been set.
         static const uint8_t MEMCMP_MAGIC_NONE = 0;
 
-        void create(ft_compare_func cmp, DESCRIPTOR desc, uint8_t memcmp_magic = MEMCMP_MAGIC_NONE) {
+        void create(ft_compare_func cmp, void *cmp_arg, DESCRIPTOR desc, uint8_t memcmp_magic = MEMCMP_MAGIC_NONE) {
             XCALLOC(_fake_db);
-            init(cmp, desc, memcmp_magic);
+            init(cmp, cmp_arg, desc, memcmp_magic);
         }
 
         // inherit the attributes of another comparator, but keep our own
@@ -78,7 +79,7 @@ namespace toku {
             invariant_notnull(_fake_db);
             invariant_notnull(cmp._cmp);
             invariant_notnull(cmp._fake_db);
-            init(cmp._cmp, cmp._fake_db->cmp_descriptor, cmp._memcmp_magic);
+            init(cmp._cmp, cmp._cmp_arg, cmp._fake_db->cmp_descriptor, cmp._memcmp_magic);
         }
 
         // like inherit, but doesn't require that the this comparator
@@ -120,16 +121,19 @@ namespace toku {
                        && dbt_has_memcmp_magic(a)
                        // ..then we expect `b' to also have the memcmp magic
                        && __builtin_expect(dbt_has_memcmp_magic(b), 1)) {
+                assert(0); // psergey: this branch should not be taken.
                 return toku_builtin_compare_fun(nullptr, a, b);
             } else {
                 // yikes, const sadness here
-                return _cmp(const_cast<DB *>(_fake_db), a, b);
+                return _cmp(const_cast<DB *>(_fake_db), _cmp_arg, a, b);
             }
         }
 
     private:
         DB *_fake_db;
         ft_compare_func _cmp;
+        void *_cmp_arg;
+
         uint8_t _memcmp_magic;
     };
 

@@ -2728,7 +2728,9 @@ class Rdb_transaction {
 
   virtual rocksdb::Status lock_range(rocksdb::ColumnFamilyHandle *const cf,
                                      const rocksdb::Slice &start,
-                                     const rocksdb::Slice &end) = 0;
+                                     bool  start_inf_suffix,
+                                     const rocksdb::Slice &end,
+                                     bool  end_inf_suffix) = 0;
 
   virtual bool prepare(const rocksdb::TransactionName &name) = 0;
 
@@ -3317,11 +3319,33 @@ class Rdb_transaction_impl : public Rdb_transaction {
 
   virtual bool is_writebatch_trx() const override { return false; }
 
+  /*
+    Both start and end endpoint may may be prefixes.
+    Both bounds are inclusive.
+  */
   rocksdb::Status lock_range(rocksdb::ColumnFamilyHandle *const cf,
                              const rocksdb::Slice &start,
-                             const rocksdb::Slice &end) override
+                             bool  start_inf_suffix,
+                             const rocksdb::Slice &end,
+                             bool  end_inf_suffix
+                             ) override
   {
-    return m_rocksdb_tx->GetRangeLock(cf, start, end);
+    const char SUFFIX_INF= 0x0;
+    const char SUFFIX_SUP= 0x1;
+    //  GetRangeLock accepts range endpoints, not keys.
+    // Convert keys to range endpoints here.
+    // See also range_endpoint_convert() below.
+    StringBuffer<64> left;
+    left.append(start_inf_suffix? SUFFIX_SUP :SUFFIX_INF);
+    left.append(start.data(), start.size());
+
+    StringBuffer<64> right;
+    right.append(end_inf_suffix? SUFFIX_SUP :SUFFIX_INF);
+    right.append(end.data(), end.size());
+
+    return m_rocksdb_tx->GetRangeLock(cf,
+                           rocksdb::Slice(left.ptr(),left.length()),
+                           rocksdb::Slice(right.ptr(),right.length()));
   }
  private:
   void release_tx(void) {
@@ -3745,7 +3769,9 @@ class Rdb_writebatch_impl : public Rdb_transaction {
 
   rocksdb::Status lock_range(rocksdb::ColumnFamilyHandle *const cf,
                              const rocksdb::Slice &start,
-                             const rocksdb::Slice &end) override
+                             bool  start_inf_suffix,
+                             const rocksdb::Slice &end,
+                             bool  end_inf_suffix) override
   {
     return rocksdb::Status::OK();
   }
@@ -4950,6 +4976,63 @@ void rocksdb_kill_connection(handlerton* hton, THD* thd)
 }
 
 
+void range_endpoint_convert(const rocksdb::Slice &key,
+                            std::string *res)
+{
+  const char SUFFIX_INF= 0x0;
+  res->clear();
+  res->append(&SUFFIX_INF, 1);
+  res->append(key.data(), key.size());
+}
+
+int range_endpoints_compare(const char *a, size_t a_len,
+                            const char *b, size_t b_len)
+{
+  size_t min_len= std::min(a_len, b_len);
+
+  //compare the values. Skip the first byte as it is the endpoint signifier
+  int res= memcmp(a+1, b+1, min_len-1);
+  if (!res)
+  {
+    if (b_len > min_len)
+    {
+      // a is shorter;
+      if (a[0] == 0)
+        return  -1; //"a is smaller"
+      else
+      {
+        // a is considered padded with 0xFF:FF:FF:FF...
+        return 1; // "a" is bigger
+      }
+    }
+    else if (a_len > min_len)
+    {
+      // the opposite of the above: b is shorter.
+      if (b[0] == 0)
+        return  1; //"b is smaller"
+      else
+      {
+        // b is considered padded with 0xFF:FF:FF:FF...
+        return -1; // "b" is bigger
+      }
+    }
+    else
+    {
+      // the lengths are equal (and the key values, too)
+      if (a[0] < b[0])
+        return -1;
+      else if (a[0] > b[0])
+        return 1;
+      else
+        return 0;
+    }
+  }
+  else
+    return res;
+}
+
+
+
 void Rdb_transaction::kill_lock_wait_by_thd(THD *thd)
 {
   /*
@@ -5637,8 +5720,11 @@ static int rocksdb_init_func(void *const p) {
   
   if (rocksdb_use_range_locking)
   {
-    //psergey-todo: this is ugly: 
-    rdb->get_range_lock_manager()->set_max_lock_memory(rocksdb_max_lock_memory);
+    rocksdb::RangeLockMgrControl *mgr= rdb->get_range_lock_manager();
+
+    mgr->set_endpoint_cmp_functions(range_endpoint_convert,
+                                    range_endpoints_compare);
+    mgr->set_max_lock_memory(rocksdb_max_lock_memory);
     sql_print_information("RocksDB: USING NEW RANGE LOCKING");
     sql_print_information("RocksDB: Max lock memory=%lu", rocksdb_max_lock_memory);
   }
@@ -8365,19 +8451,31 @@ void ha_rocksdb::set_range_lock(Rdb_transaction *tx,
                                 const rocksdb::Slice &slice,
                                 const key_range *const end_key)
 {
-  // We have 'slice' with start_slice.
   rocksdb::Slice end_slice;
   uchar end_slice_buf[MAX_KEY_LENGTH];
+  bool start_has_inf_suffix, end_has_inf_suffix;
 
   if (m_lock_rows != RDB_LOCK_WRITE || !rocksdb_use_range_locking) {
     return;
   }
 
+  /*
+    The 'slice' parameter has the left endpoint of the range to lock.
+    Figure out the right endpoint
+  */
+
   if (find_flag == HA_READ_KEY_EXACT) {
+    /* 
+      This is "key_part= const" interval
+    */
+    start_has_inf_suffix= false;
+    end_has_inf_suffix= true;
     end_slice= slice;
   }
-  else
-  if (find_flag == HA_READ_PREFIX_LAST) {
+  else if (find_flag == HA_READ_PREFIX_LAST) {
+    //psergey-todo: swap the bounds? so that the start bounds is the end?
+    //Testscase!
+
     /*
       We have made the kd.successor(m_sk_packed_tuple) call above.
 
@@ -8387,8 +8485,29 @@ void ha_rocksdb::set_range_lock(Rdb_transaction *tx,
     kd.successor(end_slice_buf, slice.size());
     end_slice= rocksdb::Slice((const char*)end_slice_buf, slice.size());
   }
-  else 
-  if (end_key) {
+  else if (end_key) {
+    // Known start range bounds: HA_READ_KEY_OR_NEXT, HA_READ_AFTER_KEY
+    if (find_flag == HA_READ_KEY_OR_NEXT)
+      start_has_inf_suffix= false;
+    else if (find_flag == HA_READ_AFTER_KEY)
+      start_has_inf_suffix= true;
+    else
+      DBUG_ASSERT(0);
+
+    // Known end range bounds: HA_READ_AFTER_KEY, HA_READ_BEFORE_KEY
+    if (end_key->flag == HA_READ_AFTER_KEY)
+    {
+      // this is "key_part <= const".
+      end_has_inf_suffix= true;
+    }
+    else if (end_key->flag == HA_READ_BEFORE_KEY)
+    {
+      // this is "key_part < const", non-inclusive.
+      end_has_inf_suffix= false;
+    }
+    else
+      DBUG_ASSERT(0);
+
     uchar pack_buffer[MAX_KEY_LENGTH];
     uint end_slice_size=
         kd.pack_index_tuple(table, pack_buffer, end_slice_buf,
@@ -8399,18 +8518,22 @@ void ha_rocksdb::set_range_lock(Rdb_transaction *tx,
   }
   else
   {
-    /*
-      On range scan without any end key condition, there is no
-      eq cond, and eq cond length is the same as index_id size (4 bytes).
-      Example1: id1 BIGINT, id2 INT, id3 BIGINT, PRIMARY KEY (id1, id2, id3)
-       WHERE id1>=1 AND id2 >= 2 and id2 <= 5 => eq_cond_len= 4
-    */
+    // Known start range bounds: HA_READ_KEY_OR_NEXT, HA_READ_AFTER_KEY
+    if (find_flag == HA_READ_KEY_OR_NEXT)
+      start_has_inf_suffix= false;
+    else if (find_flag == HA_READ_AFTER_KEY)
+      start_has_inf_suffix= true;
+    else
+      DBUG_ASSERT(0);
+
     uint end_slice_size;
-    // TODO: or this should be kd.get_index_number() ? 
     kd.get_infimum_key(end_slice_buf, &end_slice_size);
     end_slice= rocksdb::Slice((char*)end_slice_buf, end_slice_size);
+    end_has_inf_suffix= true;
   }
-  tx->lock_range(kd.get_cf(), slice, end_slice);
+  tx->lock_range(kd.get_cf(),
+                 slice,     start_has_inf_suffix,
+                 end_slice, end_has_inf_suffix);
 }
 
 /*
@@ -8542,6 +8665,9 @@ int ha_rocksdb::index_read_map_impl(uchar *const buf, const uchar *const key,
 
   Rdb_transaction *const tx = get_or_create_tx(table->in_use);
   const bool is_new_snapshot = !tx->has_snapshot();
+
+  set_range_lock(tx, kd, find_flag, slice, end_key);
+
   // Loop as long as we get a deadlock error AND we end up creating the
   // snapshot here (i.e. it did not exist prior to this)
   for (;;) {
@@ -8550,8 +8676,6 @@ int ha_rocksdb::index_read_map_impl(uchar *const buf, const uchar *const key,
       rc = HA_ERR_QUERY_INTERRUPTED;
       break;
     }
-    //psergey:
-    set_range_lock(tx, kd, find_flag, slice, end_key);
     /*
       This will open the iterator and position it at a record that's equal or
       greater than the lookup tuple.
