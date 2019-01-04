@@ -1,6 +1,11 @@
 --source include/have_rocksdb.inc
 --source include/have_debug_sync.inc
 
+# The testcase doesn't work with range locking:
+#   UPDATE where id1=1 sets a lock on [(1;-inf), (1,+inf)]
+#   then DELETE will try to get a lock on (1,1) and cause lock wait timeout
+--source suite/rocksdb/include/not_range_locking.inc
+
 # This is a test case to reproduce https://github.com/facebook/mysql-5.6/issues/162
 # Expected output of the last select for update was (1,2,100) and (1,3,100), but
 # currently it returns (1,2,1) and (1,3,1), which must be fixed.

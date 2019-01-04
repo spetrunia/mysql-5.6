@@ -114,10 +114,46 @@ select * from information_schema.rocksdb_locks;
 
 rollback;
 begin;
+--echo # The following will show a range lock on 2-9 and also a point lock on 10.
+--echo # This is how things currently work.
 select * from t1 where pk between 2 and 9 for update;
 select * from information_schema.rocksdb_locks;
 rollback;
 
 drop table t1;
 
+--echo #
+--echo # MDEV-18104: MyRocks-Gap-Lock: range locking bounds are incorrect for multi-part keys
+--echo #
 
+create table t0(a int);
+insert into t0 values (0),(1),(2),(3),(4),(5),(6),(7),(8),(9);
+create table t1 (
+  kp1 int not null,
+  kp2 int not null,
+  a int,
+  primary key(kp1, kp2)
+) engine=rocksdb;
+
+insert into t1 select 1, a, 1234 from t0;
+insert into t1 select 2, a, 1234 from t0;
+insert into t1 select 3, a, 1234 from t0;
+
+connect (con1,localhost,root,,);
+connection con1;
+
+begin;
+select * from t1 where kp1=2 for update;
+
+connection default;
+--echo # The lock on kp1=2 should inhibit the following INSERT:
+--error ER_LOCK_WAIT_TIMEOUT
+insert into t1 values ( 2,5,9999); 
+rollback;
+
+connection con1;
+rollback;
+connection default;
+disconnect con1;
+
+drop table t0,t1;
