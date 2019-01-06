@@ -8642,6 +8642,15 @@ int ha_rocksdb::index_read_map_impl(uchar *const buf, const uchar *const key,
     memcpy(m_sk_match_prefix, m_sk_packed_tuple, packed_size);
   }
 
+
+  Rdb_transaction *const tx = get_or_create_tx(table->in_use);
+  const bool is_new_snapshot = !tx->has_snapshot();
+
+  set_range_lock(tx, kd, find_flag,
+                 rocksdb::Slice(reinterpret_cast<const char *>(m_sk_packed_tuple),
+                                packed_size),
+                 end_key);
+
   int bytes_changed_by_succ = 0;
   if (find_flag == HA_READ_PREFIX_LAST_OR_PREV ||
       find_flag == HA_READ_PREFIX_LAST || find_flag == HA_READ_AFTER_KEY) {
@@ -8662,12 +8671,6 @@ int ha_rocksdb::index_read_map_impl(uchar *const buf, const uchar *const key,
       my_count_bits(keypart_map) == kd.get_key_parts()) {
     use_all_keys = true;
   }
-
-  Rdb_transaction *const tx = get_or_create_tx(table->in_use);
-  const bool is_new_snapshot = !tx->has_snapshot();
-
-  set_range_lock(tx, kd, find_flag, slice, end_key);
-
   // Loop as long as we get a deadlock error AND we end up creating the
   // snapshot here (i.e. it did not exist prior to this)
   for (;;) {
