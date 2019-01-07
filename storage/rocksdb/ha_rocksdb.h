@@ -322,8 +322,8 @@ class ha_rocksdb : public my_core::handler {
   void setup_scan_iterator(const Rdb_key_def &kd, rocksdb::Slice *slice,
                            const bool use_all_keys, const uint eq_cond_len)
       MY_ATTRIBUTE((__nonnull__));
-  //psergey:
-  void set_range_lock(Rdb_transaction *tx,
+
+  int set_range_lock(Rdb_transaction *tx,
                       const Rdb_key_def &kd, 
                       const enum ha_rkey_function &find_flag,
                       const rocksdb::Slice &slice,

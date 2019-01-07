@@ -157,5 +157,57 @@ connection con1;
 rollback;
 connection default;
 disconnect con1;
-
 drop table t0,t1;
+
+--echo #
+--echo # Test that locks on ranges on non-unique secondary keys inhibit
+--echo # modifications of the contents of these ranges
+--echo #
+
+create table t0(a int);
+insert into t0 values (0),(1),(2),(3),(4),(5),(6),(7),(8),(9);
+create table t1 (
+  kp1 int not null,
+  kp2 int not null,
+  a int,
+  key(kp1, kp2)
+) engine=rocksdb;
+
+insert into t1 select  1, a, 1234 from t0;
+insert into t1 values (2, 3, 1234);
+insert into t1 values (2, 5, 1234);
+insert into t1 values (2, 7, 1234);
+insert into t1 select  3, a, 1234 from t0;
+
+connect (con1,localhost,root,,);
+connection con1;
+begin;
+--replace_column 9 #
+explain
+select * from t1 where kp1=2 for update;
+select * from t1 where kp1=2 for update;
+
+connection default;
+begin;
+--error ER_LOCK_WAIT_TIMEOUT
+insert into t1 values (2, 9, 9999);
+
+--error ER_LOCK_WAIT_TIMEOUT
+delete from t1 where kp1=2 and kp2=5;
+
+# Update that "moves a row away" from the locked range
+--error ER_LOCK_WAIT_TIMEOUT
+update t1 set kp1=333 where kp1=2 and kp2=3;
+
+# Update that "moves a row into" the locked range
+--error ER_LOCK_WAIT_TIMEOUT
+update t1 set kp1=2 where kp1=1 and kp2=8;
+
+rollback;
+
+connection con1;
+rollback;
+disconnect con1;
+connection default;
+drop table t0,t1;
+

@@ -2726,11 +2726,15 @@ class Rdb_transaction {
   virtual void release_lock(rocksdb::ColumnFamilyHandle *const column_family,
                             const std::string &rowkey) = 0;
 
-  virtual rocksdb::Status lock_range(rocksdb::ColumnFamilyHandle *const cf,
-                                     const rocksdb::Slice &start,
-                                     bool  start_inf_suffix,
-                                     const rocksdb::Slice &end,
-                                     bool  end_inf_suffix) = 0;
+  virtual
+  rocksdb::Status lock_range(rocksdb::ColumnFamilyHandle *const cf,
+                             const rocksdb::Slice &start, bool start_inf_suffix,
+                             const rocksdb::Slice &end, bool end_inf_suffix)=0;
+
+  rocksdb::Status lock_singlepoint_range(rocksdb::ColumnFamilyHandle *const cf,
+                                         const rocksdb::Slice &point) {
+    return lock_range(cf, point, false, point, false);
+  }
 
   virtual bool prepare(const rocksdb::TransactionName &name) = 0;
 
@@ -3323,13 +3327,12 @@ class Rdb_transaction_impl : public Rdb_transaction {
     Both start and end endpoint may may be prefixes.
     Both bounds are inclusive.
   */
+  virtual
   rocksdb::Status lock_range(rocksdb::ColumnFamilyHandle *const cf,
                              const rocksdb::Slice &start,
-                             bool  start_inf_suffix,
+                             bool start_inf_suffix,
                              const rocksdb::Slice &end,
-                             bool  end_inf_suffix
-                             ) override
-  {
+                             bool end_inf_suffix) override {
     const char SUFFIX_INF= 0x0;
     const char SUFFIX_SUP= 0x1;
     //  GetRangeLock accepts range endpoints, not keys.
@@ -3343,9 +3346,9 @@ class Rdb_transaction_impl : public Rdb_transaction {
     right.append(end_inf_suffix? SUFFIX_SUP :SUFFIX_INF);
     right.append(end.data(), end.size());
 
-    return m_rocksdb_tx->GetRangeLock(cf,
-                           rocksdb::Slice(left.ptr(),left.length()),
-                           rocksdb::Slice(right.ptr(),right.length()));
+    return
+      m_rocksdb_tx->GetRangeLock(cf, rocksdb::Slice(left.ptr(),left.length()),
+                                 rocksdb::Slice(right.ptr(),right.length()));
   }
  private:
   void release_tx(void) {
@@ -3769,10 +3772,9 @@ class Rdb_writebatch_impl : public Rdb_transaction {
 
   rocksdb::Status lock_range(rocksdb::ColumnFamilyHandle *const cf,
                              const rocksdb::Slice &start,
-                             bool  start_inf_suffix,
+                             bool start_inf_suffix,
                              const rocksdb::Slice &end,
-                             bool  end_inf_suffix) override
-  {
+                             bool end_inf_suffix) override {
     return rocksdb::Status::OK();
   }
 
@@ -8445,7 +8447,7 @@ int ha_rocksdb::index_read_map(uchar *const buf, const uchar *const key,
 }
 
 
-void ha_rocksdb::set_range_lock(Rdb_transaction *tx,
+int ha_rocksdb::set_range_lock(Rdb_transaction *tx,
                                 const Rdb_key_def &kd, 
                                 const enum ha_rkey_function &find_flag,
                                 const rocksdb::Slice &slice,
@@ -8456,7 +8458,7 @@ void ha_rocksdb::set_range_lock(Rdb_transaction *tx,
   bool start_has_inf_suffix, end_has_inf_suffix;
 
   if (m_lock_rows != RDB_LOCK_WRITE || !rocksdb_use_range_locking) {
-    return;
+    return 0;
   }
 
   /*
@@ -8531,9 +8533,14 @@ void ha_rocksdb::set_range_lock(Rdb_transaction *tx,
     end_slice= rocksdb::Slice((char*)end_slice_buf, end_slice_size);
     end_has_inf_suffix= true;
   }
-  tx->lock_range(kd.get_cf(),
-                 slice,     start_has_inf_suffix,
-                 end_slice, end_has_inf_suffix);
+
+  auto s= tx->lock_range(kd.get_cf(), slice, start_has_inf_suffix,
+                         end_slice, end_has_inf_suffix);
+  if (!s.ok()) {
+    return (tx->set_status_error(table->in_use, s, kd, m_tbl_def,
+                                 m_table_handler));
+  }
+  return 0;
 }
 
 /*
@@ -8646,10 +8653,10 @@ int ha_rocksdb::index_read_map_impl(uchar *const buf, const uchar *const key,
   Rdb_transaction *const tx = get_or_create_tx(table->in_use);
   const bool is_new_snapshot = !tx->has_snapshot();
 
-  set_range_lock(tx, kd, find_flag,
-                 rocksdb::Slice(reinterpret_cast<const char *>(m_sk_packed_tuple),
-                                packed_size),
-                 end_key);
+  rocksdb::Slice lock_slice(reinterpret_cast<const char *>(m_sk_packed_tuple),
+                                    packed_size);
+  if ((rc = set_range_lock(tx, kd, find_flag, lock_slice, end_key)))
+    DBUG_RETURN(rc);
 
   int bytes_changed_by_succ = 0;
   if (find_flag == HA_READ_PREFIX_LAST_OR_PREV ||
@@ -10351,6 +10358,15 @@ int ha_rocksdb::update_write_sk(const TABLE *const table_arg,
     old_key_slice = rocksdb::Slice(
         reinterpret_cast<const char *>(m_sk_packed_tuple_old), old_packed_size);
 
+    /* Range locking: lock the index tuple being deleted */
+    if (rocksdb_use_range_locking) {
+      auto s= row_info.tx->lock_singlepoint_range(kd.get_cf(), old_key_slice);
+      if (!s.ok()) {
+        return (row_info.tx->set_status_error(table->in_use, s, kd,
+                                              m_tbl_def, m_table_handler));
+      }
+    }
+
     row_info.tx->get_indexed_write_batch()->SingleDelete(kd.get_cf(),
                                                          old_key_slice);
 
@@ -10366,6 +10382,14 @@ int ha_rocksdb::update_write_sk(const TABLE *const table_arg,
   if (bulk_load_sk && row_info.old_data == nullptr) {
     rc = bulk_load_key(row_info.tx, kd, new_key_slice, new_value_slice, true);
   } else {
+    /* Range locking: lock the index tuple being inserted */
+    if (rocksdb_use_range_locking) {
+      auto s= row_info.tx->lock_singlepoint_range(kd.get_cf(), new_key_slice);
+      if (!s.ok()) {
+        return (row_info.tx->set_status_error(table->in_use, s, kd,
+                                              m_tbl_def, m_table_handler));
+      }
+    }
     row_info.tx->get_indexed_write_batch()->Put(kd.get_cf(), new_key_slice,
                                                 new_value_slice);
   }
@@ -10462,6 +10486,10 @@ int ha_rocksdb::update_write_row(const uchar *const old_data,
   if (rc != HA_EXIT_SUCCESS) {
     DBUG_RETURN(rc);
   }
+
+  // Range Locking: do we have a lock on the old PK value here? 
+  //  - we have read the row we are about to update, right? (except for some
+  //  RBR mode? (in which we won't want to acquire locks anyway?))
 
   /*
     For UPDATEs, if the key has changed, we need to obtain a lock. INSERTs
@@ -10938,7 +10966,8 @@ int ha_rocksdb::delete_row(const uchar *const buf) {
   rocksdb::Slice key_slice(m_last_rowkey.ptr(), m_last_rowkey.length());
   Rdb_transaction *const tx = get_or_create_tx(table->in_use);
   ulonglong bytes_written = 0;
-
+  // Range Locking: we are certain that the PK record is already locked here,
+  // right? 
   const uint index = pk_index(table, m_tbl_def);
   rocksdb::Status s =
       delete_or_singledelete(index, tx, m_pk_descr->get_cf(), key_slice);
@@ -10966,7 +10995,19 @@ int ha_rocksdb::delete_row(const uchar *const buf) {
                                    nullptr, false, hidden_pk_id);
       rocksdb::Slice secondary_key_slice(
           reinterpret_cast<const char *>(m_sk_packed_tuple), packed_size);
-      /* Deleting on secondary key doesn't need any locks: */
+
+      /*
+        For point locking, Deleting on secondary key doesn't need any locks.
+        Range locking must set locks
+      */
+      if (rocksdb_use_range_locking) {
+        auto s= tx->lock_singlepoint_range(kd.get_cf(), secondary_key_slice);
+        if (!s.ok()) {
+          return (tx->set_status_error(table->in_use, s, kd, m_tbl_def,
+                                       m_table_handler));
+        }
+      }
+
       tx->get_indexed_write_batch()->SingleDelete(kd.get_cf(),
                                                   secondary_key_slice);
       bytes_written += secondary_key_slice.size();
