@@ -8455,7 +8455,7 @@ int ha_rocksdb::set_range_lock(Rdb_transaction *tx,
 {
   rocksdb::Slice end_slice;
   uchar end_slice_buf[MAX_KEY_LENGTH];
-  bool start_has_inf_suffix, end_has_inf_suffix;
+  bool start_has_inf_suffix = false, end_has_inf_suffix = false;
 
   if (m_lock_rows != RDB_LOCK_WRITE || !rocksdb_use_range_locking) {
     return 0;
@@ -8486,6 +8486,7 @@ int ha_rocksdb::set_range_lock(Rdb_transaction *tx,
     memcpy(end_slice_buf, slice.data(), slice.size());
     kd.successor(end_slice_buf, slice.size());
     end_slice= rocksdb::Slice((const char*)end_slice_buf, slice.size());
+    start_has_inf_suffix= end_has_inf_suffix= false;
   }
   else if (end_key) {
     // Known start range bounds: HA_READ_KEY_OR_NEXT, HA_READ_AFTER_KEY
@@ -11003,8 +11004,8 @@ int ha_rocksdb::delete_row(const uchar *const buf) {
       if (rocksdb_use_range_locking) {
         auto s= tx->lock_singlepoint_range(kd.get_cf(), secondary_key_slice);
         if (!s.ok()) {
-          return (tx->set_status_error(table->in_use, s, kd, m_tbl_def,
-                                       m_table_handler));
+          DBUG_RETURN(tx->set_status_error(table->in_use, s, kd, m_tbl_def,
+                                           m_table_handler));
         }
       }
 
