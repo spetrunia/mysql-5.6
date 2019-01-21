@@ -211,3 +211,98 @@ disconnect con1;
 connection default;
 drop table t0,t1;
 
+--echo #
+--echo # Transaction isolation test
+--echo #
+
+create table t1 (pk int primary key, a int) engine=rocksdb;
+insert into t1 values (1,1),(2,2),(3,3);
+
+connect (con1,localhost,root,,);
+
+--echo # TRX1: Start, Allocate a snapshot
+connection con1;
+begin;
+select * from t1;
+
+--echo # TRX2: Make a change that TRX1 will not see
+connection default;
+update t1 set a=2222 where pk=2;
+
+--echo # TRX1: Now, make a change that would overwrite TRX2'x change and commit
+connection con1;
+update t1 set a=a+1 where pk=2;
+commit;
+
+--echo # Examine the result:
+--echo #   pk=2, a=2223 means UPDATE in TRX1 used "read committed" (InnoDB-like isolation)
+--echo #   pk=2, a=3 means UPDATE in TRX1 silently overwrote TRX2
+--echo #   (and with key tracking, one would get an error on the second UPDATE)
+connection default;
+select * from t1;
+
+disconnect con1;
+connection default;
+drop table t1;
+
+--echo #
+--echo # Same test as above, but check the range scan
+--echo #
+
+create table t1 (pk int primary key, a int) engine=rocksdb;
+insert into t1 values (1,1),(2,2),(3,3),(4,4),(5,5),(6,6);
+
+connect (con1,localhost,root,,);
+
+--echo # TRX1: Start, Allocate a snapshot
+connection con1;
+begin;
+select * from t1;
+
+--echo # TRX2: Make a change that TRX1 will not see
+connection default;
+update t1 set a=2222 where pk between 3 and 5;
+
+--echo # TRX1: Now, make a change that would overwrite TRX2'x change and commit
+connection con1;
+update t1 set a=a+1 where pk between 3 and 5;
+commit;
+
+--echo # Examine the result:
+--echo #   pk={3,4,5} a=2223 means UPDATE in TRX1 used "read committed" (InnoDB-like isolation)
+connection default;
+select * from t1;
+
+disconnect con1;
+connection default;
+drop table t1;
+
+--echo #
+--echo # Same as above, but test SELECT FOR UPDATE.
+--echo #
+create table t1 (pk int primary key, a int) engine=rocksdb;
+insert into t1 values (1,1),(2,2),(3,3),(4,4),(5,5),(6,6);
+
+connect (con1,localhost,root,,);
+
+--echo # TRX1: Start, Allocate a snapshot
+connection con1;
+begin;
+select * from t1;
+
+--echo # TRX2: Make a change that TRX1 will not see
+connection default;
+update t1 set a=222 where pk=2;
+update t1 set a=333 where pk=3;
+
+--echo # TRX1: Check what select [FOR UPDATE] sees
+connection con1;
+select * from t1 where pk in (2,3);
+select * from t1 where pk=2 for update;
+select * from t1 where pk=2;
+
+commit;
+
+disconnect con1;
+connection default;
+drop table t1;

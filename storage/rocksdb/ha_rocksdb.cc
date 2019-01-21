@@ -2551,8 +2551,39 @@ class Rdb_transaction {
   virtual void do_set_savepoint() = 0;
   virtual void do_rollback_to_savepoint() = 0;
 
+ private:
+  /*
+    If true, the current statement should not use a snapshot for reading.
+    Note that in a multi-statement transaction, the snapshot may have been
+    allocated by another statement.
+  */
+  bool m_stmt_ignores_snapshot = false;
+
+  /* Snapshot-ignore mode will put away m_reads_opts.snapshot here: */
+  const rocksdb::Snapshot *m_saved_snapshot;
+
  public:
+
+  void start_ignore_snapshot() {
+    // note: this may be called several times for the same statement
+    if (!m_stmt_ignores_snapshot) {
+      m_saved_snapshot = m_read_opts.snapshot;
+      m_read_opts.snapshot = nullptr;
+      m_stmt_ignores_snapshot= true;
+    }
+  }
+
+  void end_ignore_snapshot_if_needed() {
+    if (m_stmt_ignores_snapshot) {
+      m_stmt_ignores_snapshot = false;
+      m_read_opts.snapshot = m_saved_snapshot;
+      m_saved_snapshot = nullptr;
+    }
+  }
+  bool in_snapshot_ignore_mode() const { return m_stmt_ignores_snapshot; }
+
   rocksdb::ReadOptions m_read_opts;
+
   const char *m_mysql_log_file_name;
   my_off_t m_mysql_log_offset;
   const char *m_mysql_gtid;
@@ -3186,7 +3217,7 @@ class Rdb_transaction {
 
   virtual bool is_tx_started() const = 0;
   virtual void start_tx() = 0;
-  virtual void start_stmt() = 0;
+  virtual void start_stmt(bool is_dml_statement) = 0;
 
   void set_initial_savepoint() {
     /*
@@ -3437,7 +3468,7 @@ class Rdb_transaction_impl : public Rdb_transaction {
   }
 
   void acquire_snapshot(bool acquire_now) override {
-    if (m_read_opts.snapshot == nullptr) {
+    if (m_read_opts.snapshot == nullptr && !in_snapshot_ignore_mode()) {
       const auto thd_ss = std::static_pointer_cast<Rdb_explicit_snapshot>(
           m_thd->get_explicit_snapshot());
       if (thd_ss) {
@@ -3564,7 +3595,7 @@ class Rdb_transaction_impl : public Rdb_transaction {
 
     if (value != nullptr) {
       value->Reset();
-    }
+    } // psergey-todo: m_read_opts.snapshot below!
     rocksdb::Status s;
     // If snapshot is null, pass it to GetForUpdate and snapshot is
     // initialized there. Snapshot validation is skipped in that case.
@@ -3642,13 +3673,25 @@ class Rdb_transaction_impl : public Rdb_transaction {
   /*
     Start a statement inside a multi-statement transaction.
 
-    @todo: are we sure this is called once (and not several times) per
-    statement start?
+    @note: If a statement uses N tables, this function will be called N times,
+    for each TABLE object that is used.
 
     For hooking to start of statement that is its own transaction, see
     ha_rocksdb::external_lock().
   */
-  void start_stmt() override {
+  void start_stmt(bool is_dml_statement) override {
+
+    if (rocksdb_use_range_locking && is_dml_statement) {
+      /*
+        In Range Locking mode, RocksDB does not do "key tracking".
+        Use InnoDB-like concurrency mode: make the DML statements always read
+        the latest data (instead of using transaction's snapshot).
+        This "downgrades" the transaction isolation to READ-COMMITTED on the
+        master, but in return the actions can be replayed on the slave.
+      */
+      start_ignore_snapshot();
+    }
+
     // Set the snapshot to delayed acquisition (SetSnapshotOnNextOperation)
     acquire_snapshot(false);
   }
@@ -3889,7 +3932,7 @@ class Rdb_writebatch_impl : public Rdb_transaction {
     set_initial_savepoint();
   }
 
-  void start_stmt() override {}
+  void start_stmt(bool is_dml_statement) override {}
 
   void rollback_stmt() override {
     if (m_batch) rollback_to_stmt_savepoint();
@@ -4098,6 +4141,7 @@ static int rocksdb_prepare(handlerton *const hton, THD *const thd,
     DEBUG_SYNC(thd, "rocksdb.prepared");
   } else {
     tx->make_stmt_savepoint_permanent();
+    tx->end_ignore_snapshot_if_needed();
   }
 
   return HA_EXIT_SUCCESS;
@@ -4276,6 +4320,7 @@ static int rocksdb_commit(handlerton *const hton, THD *const thd,
       */
       tx->set_tx_failed(false);
       tx->make_stmt_savepoint_permanent();
+      tx->end_ignore_snapshot_if_needed();
     }
 
     if (my_core::thd_tx_isolation(thd) <= ISO_READ_COMMITTED) {
@@ -4314,6 +4359,7 @@ static int rocksdb_rollback(handlerton *const hton, THD *const thd,
       */
 
       tx->rollback_stmt();
+      tx->end_ignore_snapshot_if_needed();
       tx->set_tx_failed(true);
     }
 
@@ -4859,13 +4905,19 @@ static bool rocksdb_show_status(handlerton *const hton, THD *const thd,
   return res;
 }
 
+
+/*
+  @param is_dml_statement   If true, we are is a DML statement
+*/
+
 static inline void rocksdb_register_tx(handlerton *const hton, THD *const thd,
-                                       Rdb_transaction *const tx) {
+                                       Rdb_transaction *const tx,
+                                       bool is_dml_stmt) {
   DBUG_ASSERT(tx != nullptr);
 
   trans_register_ha(thd, FALSE, rocksdb_hton);
   if (my_core::thd_test_options(thd, OPTION_NOT_AUTOCOMMIT | OPTION_BEGIN)) {
-    tx->start_stmt();
+    tx->start_stmt(is_dml_stmt);
     trans_register_ha(thd, TRUE, rocksdb_hton);
   }
 }
@@ -4961,7 +5013,7 @@ static int rocksdb_start_tx_and_assign_read_view(
 
   DBUG_ASSERT(!tx->has_snapshot());
   tx->set_tx_read_only(true);
-  rocksdb_register_tx(hton, thd, tx);
+  rocksdb_register_tx(hton, thd, tx, false);
   tx->acquire_snapshot(true);
 
   if (ss_info) {
@@ -5109,7 +5161,7 @@ static int rocksdb_start_tx_with_shared_read_view(
 
     DBUG_ASSERT(!tx->has_snapshot());
     tx->set_tx_read_only(true);
-    rocksdb_register_tx(hton, thd, tx);
+    rocksdb_register_tx(hton, thd, tx, false);
     tx->acquire_snapshot(true);
 
     // case: an explicit snapshot was not assigned to this transaction
@@ -11528,7 +11580,7 @@ int ha_rocksdb::external_lock(THD *const thd, int lock_type) {
       }
     }
     tx->m_n_mysql_tables_in_use++;
-    rocksdb_register_tx(rocksdb_hton, thd, tx);
+    rocksdb_register_tx(rocksdb_hton, thd, tx, (lock_type == F_WRLCK));
     tx->io_perf_start(&m_io_perf);
   }
 
@@ -11555,7 +11607,7 @@ int ha_rocksdb::start_stmt(THD *const thd, thr_lock_type lock_type) {
 
   Rdb_transaction *const tx = get_or_create_tx(thd);
   read_thd_vars(thd);
-  rocksdb_register_tx(ht, thd, tx);
+  rocksdb_register_tx(ht, thd, tx, (lock_type == F_WRLCK));
   tx->io_perf_start(&m_io_perf);
 
   DBUG_RETURN(HA_EXIT_SUCCESS);
