@@ -5104,7 +5104,7 @@ void Rdb_transaction::kill_lock_wait_by_thd(THD *thd)
 
   if (tx && tx->m_last_trx_id != UINT64_MAX)
   {
-    rdb->KillLockWait((void*)tx->m_last_trx_id);
+    rdb->KillLockWait(tx->m_last_trx_id);
   }
   RDB_MUTEX_UNLOCK_CHECK(Rdb_transaction::s_tx_list_mutex);
 }
