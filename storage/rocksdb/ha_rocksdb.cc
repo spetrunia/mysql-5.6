@@ -4358,8 +4358,8 @@ static int rocksdb_rollback(handlerton *const hton, THD *const thd,
         - a statement inside a transaction is rolled back
       */
 
-      tx->rollback_stmt();
       tx->end_ignore_snapshot_if_needed();
+      tx->rollback_stmt();
       tx->set_tx_failed(true);
     }
 
