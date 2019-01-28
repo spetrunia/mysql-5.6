@@ -3218,6 +3218,7 @@ class Rdb_transaction {
   virtual bool is_tx_started() const = 0;
   virtual void start_tx() = 0;
   virtual void start_stmt(bool is_dml_statement) = 0;
+  virtual void start_autocommit_stmt(bool is_dml_statement){}
 
   void set_initial_savepoint() {
     /*
@@ -3694,6 +3695,12 @@ class Rdb_transaction_impl : public Rdb_transaction {
 
     // Set the snapshot to delayed acquisition (SetSnapshotOnNextOperation)
     acquire_snapshot(false);
+  }
+
+  void start_autocommit_stmt(bool is_dml_statement) override {
+    if (rocksdb_use_range_locking && is_dml_statement) {
+      start_ignore_snapshot();
+    }
   }
 
   /*
@@ -4311,6 +4318,7 @@ static int rocksdb_commit(handlerton *const hton, THD *const thd,
          - For a COMMIT statement that finishes a multi-statement transaction
          - For a statement that has its own transaction
       */
+      tx->end_ignore_snapshot_if_needed();
       if (tx->commit()) {
         DBUG_RETURN(HA_ERR_ROCKSDB_COMMIT_FAILED);
       }
@@ -4919,6 +4927,8 @@ static inline void rocksdb_register_tx(handlerton *const hton, THD *const thd,
   if (my_core::thd_test_options(thd, OPTION_NOT_AUTOCOMMIT | OPTION_BEGIN)) {
     tx->start_stmt(is_dml_stmt);
     trans_register_ha(thd, TRUE, rocksdb_hton);
+  } else {
+    tx->start_autocommit_stmt(is_dml_stmt);
   }
 }
 
