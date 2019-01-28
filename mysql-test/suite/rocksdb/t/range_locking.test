@@ -306,3 +306,49 @@ commit;
 disconnect con1;
 connection default;
 drop table t1;
+
+--echo #
+--echo # Another no-snapshot-checking test, this time for single-statement
+--echo # transaction
+--echo #
+
+create table t1 (pk int primary key, a int, name varchar(16)) engine=rocksdb;
+insert into t1 values (1,1, 'row1'), (2,2,'row2');
+
+connect (con1,localhost,root,,);
+connection con1;
+select get_lock('row1', 100);
+
+connection default;
+
+--echo # The following will read the first row (1,1,'row1'), and stop.
+
+send update t1 set a=a+100 where get_lock(name, 1000)=1;
+
+# Wait till the default connection has stopped:
+connection con1;
+
+let $wait_condition=
+  SELECT COUNT(*) = 1 FROM INFORMATION_SCHEMA.PROCESSLIST WHERE STATE = "User lock"
+  AND INFO = "update t1 set a=a+100 where get_lock(name, 1000)=1";
+--source include/wait_condition.inc
+
+# Update the second row
+update t1 set a=5 where pk=2;
+
+select release_lock('row1');
+
+connection default;
+reap;
+
+--echo # Look at the row with pk=2:
+--echo #  2, 105, row2 - means the UPDATE was reading current data (Correct)
+--echo #  2, 102, row - means the UPDATE read the snapshot (incorrect)
+select * from t1;
+
+--echo # Try releasing both locks (in 5.6, we will be holding only the second one)
+select release_lock(name) from t1;
+
+disconnect con1;
+connection default;
+drop table t1;
