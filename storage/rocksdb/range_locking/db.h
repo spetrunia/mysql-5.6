@@ -428,13 +428,6 @@ struct __toku_db_txn_active {
   uint32_t txnid;
   DB_LSN lsn;
 };
-typedef struct __toku_txn_progress {
-  uint64_t entries_total;
-  uint64_t entries_processed;
-  uint8_t  is_commit;
-  uint8_t  stalled_on_checkpoint;
-} *TOKU_TXN_PROGRESS, TOKU_TXN_PROGRESS_S;
-typedef void(*TXN_PROGRESS_POLL_FUNCTION)(TOKU_TXN_PROGRESS, void*);
 struct txn_stat {
   uint64_t rollback_raw_count;
   uint64_t rollback_num_entries;
@@ -482,40 +475,10 @@ struct __toku_dbc {
   int (*c_close) (DBC *);
   int (*c_get) (DBC *, DBT *, DBT *, uint32_t);
 };
-int db_env_create(DB_ENV **, uint32_t) __attribute__((__visibility__("default")));
 int db_create(DB **, DB_ENV *, uint32_t) __attribute__((__visibility__("default")));
 const char *db_strerror(int) __attribute__((__visibility__("default")));
 const char *db_version(int*,int *,int *) __attribute__((__visibility__("default")));
 int log_compare (const DB_LSN*, const DB_LSN *) __attribute__((__visibility__("default")));
-int toku_set_trace_file (const char *fname) __attribute__((__visibility__("default")));
-int toku_close_trace_file (void) __attribute__((__visibility__("default")));
-void db_env_set_direct_io (bool direct_io_on) __attribute__((__visibility__("default")));
-void db_env_set_compress_buffers_before_eviction (bool compress_buffers) __attribute__((__visibility__("default")));
-void db_env_set_func_fsync (int (*)(int)) __attribute__((__visibility__("default")));
-void db_env_set_func_free (void (*)(void*)) __attribute__((__visibility__("default")));
-void db_env_set_func_malloc (void *(*)(size_t)) __attribute__((__visibility__("default")));
-void db_env_set_func_realloc (void *(*)(void*, size_t)) __attribute__((__visibility__("default")));
-void db_env_set_func_pwrite (ssize_t (*)(int, const void *, size_t, toku_off_t)) __attribute__((__visibility__("default")));
-void db_env_set_func_full_pwrite (ssize_t (*)(int, const void *, size_t, toku_off_t)) __attribute__((__visibility__("default")));
-void db_env_set_func_write (ssize_t (*)(int, const void *, size_t)) __attribute__((__visibility__("default")));
-void db_env_set_func_full_write (ssize_t (*)(int, const void *, size_t)) __attribute__((__visibility__("default")));
-void db_env_set_func_fdopen (FILE* (*)(int, const char *)) __attribute__((__visibility__("default")));
-void db_env_set_func_fopen (FILE* (*)(const char *, const char *)) __attribute__((__visibility__("default")));
-void db_env_set_func_open (int (*)(const char *, int, int)) __attribute__((__visibility__("default")));
-void db_env_set_func_fclose (int (*)(FILE*)) __attribute__((__visibility__("default")));
-void db_env_set_func_pread (ssize_t (*)(int, void *, size_t, off_t)) __attribute__((__visibility__("default")));
-void db_env_set_func_loader_fwrite (size_t (*fwrite_fun)(const void*,size_t,size_t,FILE*)) __attribute__((__visibility__("default")));
-void db_env_set_checkpoint_callback (void (*)(void*), void*) __attribute__((__visibility__("default")));
-void db_env_set_checkpoint_callback2 (void (*)(void*), void*) __attribute__((__visibility__("default")));
-void db_env_set_recover_callback (void (*)(void*), void*) __attribute__((__visibility__("default")));
-void db_env_set_recover_callback2 (void (*)(void*), void*) __attribute__((__visibility__("default")));
-void db_env_set_loader_size_factor (uint32_t) __attribute__((__visibility__("default")));
-void db_env_set_mvcc_garbage_collection_verification(uint32_t) __attribute__((__visibility__("default")));
-void db_env_enable_engine_status(bool) __attribute__((__visibility__("default")));
-void db_env_set_flusher_thread_callback (void (*)(int, void*), void*) __attribute__((__visibility__("default")));
-void db_env_set_num_bucket_mutexes(uint32_t) __attribute__((__visibility__("default")));
-int db_env_set_toku_product_name(const char*) __attribute__((__visibility__("default")));
-void db_env_try_gdb_stack_trace(const char *gdb_path) __attribute__((__visibility__("default")));
 #if defined(__cplusplus) || defined(__cilkplusplus)
 }
 #endif
