@@ -100,11 +100,6 @@ Copyright (c) 2006, 2015, Percona and/or its affiliates. All rights reserved.
 # define CAST_FROM_VOIDP(name, value) name = cast_to_typeof(name) (value)
 #endif
 
-#ifndef TOKU_OFF_T_DEFINED
-#define TOKU_OFF_T_DEFINED
-typedef int64_t toku_off_t;
-#endif
-
 // PORT2:#include "toku_os.h"
 // PORT2: #include "toku_htod.h"
 // PORT2: #include "toku_assert.h"

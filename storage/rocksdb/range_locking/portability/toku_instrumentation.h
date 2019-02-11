@@ -213,6 +213,8 @@ inline void toku_instr_cond_signal(UU(toku_cond_t &cond)) {}
 
 inline void toku_instr_cond_broadcast(UU(toku_cond_t &cond)) {}
 
+#if 0
+// rw locks are not used 
 // rwlock instrumentation
 struct toku_rwlock_instrumentation {};
 
@@ -244,98 +246,25 @@ inline void toku_instr_rwlock_wrlock_wait_end(
     UU(int pthread_rwlock_wait_result)) {}
 
 inline void toku_instr_rwlock_unlock(UU(toku_pthread_rwlock_t &rwlock)) {}
+#endif
 
 #else  // MYSQL_TOKUDB_ENGINE
 // There can be not only mysql but also mongodb or any other PFS stuff
 #include <toku_instr_mysql.h>
 #endif  // MYSQL_TOKUDB_ENGINE
 
-extern toku_instr_key toku_uninstrumented;
-
-extern toku_instr_probe *toku_instr_probe_1;
-
-// threads
-extern toku_instr_key *extractor_thread_key;
-extern toku_instr_key *fractal_thread_key;
-extern toku_instr_key *io_thread_key;
-extern toku_instr_key *eviction_thread_key;
-extern toku_instr_key *kibbutz_thread_key;
-extern toku_instr_key *minicron_thread_key;
-extern toku_instr_key *tp_internal_thread_key;
-
-// Files
-extern toku_instr_key *tokudb_file_data_key;
-extern toku_instr_key *tokudb_file_load_key;
-extern toku_instr_key *tokudb_file_tmp_key;
-extern toku_instr_key *tokudb_file_log_key;
 
 // Mutexes
-extern toku_instr_key *kibbutz_mutex_key;
-extern toku_instr_key *minicron_p_mutex_key;
-extern toku_instr_key *queue_result_mutex_key;
-extern toku_instr_key *tpool_lock_mutex_key;
-extern toku_instr_key *workset_lock_mutex_key;
-extern toku_instr_key *bjm_jobs_lock_mutex_key;
-extern toku_instr_key *log_internal_lock_mutex_key;
-extern toku_instr_key *cachetable_ev_thread_lock_mutex_key;
-extern toku_instr_key *cachetable_disk_nb_mutex_key;
-extern toku_instr_key *cachetable_m_mutex_key;
-extern toku_instr_key *safe_file_size_lock_mutex_key;
-extern toku_instr_key *checkpoint_safe_mutex_key;
-extern toku_instr_key *ft_ref_lock_mutex_key;
-extern toku_instr_key *loader_error_mutex_key;
-extern toku_instr_key *bfs_mutex_key;
-extern toku_instr_key *loader_bl_mutex_key;
-extern toku_instr_key *loader_fi_lock_mutex_key;
-extern toku_instr_key *loader_out_mutex_key;
-extern toku_instr_key *result_output_condition_lock_mutex_key;
-extern toku_instr_key *block_table_mutex_key;
-extern toku_instr_key *rollback_log_node_cache_mutex_key;
-extern toku_instr_key *txn_lock_mutex_key;
-extern toku_instr_key *txn_state_lock_mutex_key;
-extern toku_instr_key *txn_child_manager_mutex_key;
-extern toku_instr_key *txn_manager_lock_mutex_key;
-extern toku_instr_key *treenode_mutex_key;
-extern toku_instr_key *manager_mutex_key;
 extern toku_instr_key *manager_escalation_mutex_key;
 extern toku_instr_key *manager_escalator_mutex_key;
-extern toku_instr_key *db_txn_struct_i_txn_mutex_key;
-extern toku_instr_key *indexer_i_indexer_lock_mutex_key;
-extern toku_instr_key *indexer_i_indexer_estimate_lock_mutex_key;
+extern toku_instr_key *manager_mutex_key;
+extern toku_instr_key *treenode_mutex_key;
 extern toku_instr_key *locktree_request_info_mutex_key;
 extern toku_instr_key *locktree_request_info_retry_mutex_key;
 
 // condition vars
-extern toku_instr_key *result_state_cond_key;
-extern toku_instr_key *bjm_jobs_wait_key;
-extern toku_instr_key *cachetable_p_refcount_wait_key;
-extern toku_instr_key *cachetable_m_flow_control_cond_key;
-extern toku_instr_key *cachetable_m_ev_thread_cond_key;
-extern toku_instr_key *bfs_cond_key;
-extern toku_instr_key *result_output_condition_key;
-extern toku_instr_key *manager_m_escalator_done_key;
 extern toku_instr_key *lock_request_m_wait_cond_key;
-extern toku_instr_key *queue_result_cond_key;
-extern toku_instr_key *ws_worker_wait_key;
-extern toku_instr_key *rwlock_wait_read_key;
-extern toku_instr_key *rwlock_wait_write_key;
-extern toku_instr_key *rwlock_cond_key;
-extern toku_instr_key *tp_thread_wait_key;
-extern toku_instr_key *tp_pool_wait_free_key;
-extern toku_instr_key *frwlock_m_wait_read_key;
-extern toku_instr_key *kibbutz_k_cond_key;
-extern toku_instr_key *minicron_p_condvar_key;
 extern toku_instr_key *locktree_request_info_retry_cv_key;
+extern toku_instr_key *manager_m_escalator_done_key;
 
-// rwlocks
-extern toku_instr_key *multi_operation_lock_key;
-extern toku_instr_key *low_priority_multi_operation_lock_key;
-extern toku_instr_key *cachetable_m_list_lock_key;
-extern toku_instr_key *cachetable_m_pending_lock_expensive_key;
-extern toku_instr_key *cachetable_m_pending_lock_cheap_key;
-extern toku_instr_key *cachetable_m_lock_key;
-extern toku_instr_key *result_i_open_dbs_rwlock_key;
-extern toku_instr_key *checkpoint_safe_rwlock_key;
-extern toku_instr_key *cachetable_value_key;
-extern toku_instr_key *safe_file_size_lock_rwlock_key;
-extern toku_instr_key *cachetable_disk_nb_rwlock_key;
+
