@@ -38,7 +38,7 @@ Copyright (c) 2006, 2015, Percona and/or its affiliates. All rights reserved.
 
 #pragma once
 
-#include "toku_config.h"
+// PORT2: #include "toku_config.h"
 
 #include <time.h>
 #include <sys/time.h>
@@ -50,7 +50,8 @@ Copyright (c) 2006, 2015, Percona and/or its affiliates. All rights reserved.
 static inline float toku_tdiff (struct timeval *a, struct timeval *b) {
     return (float)((a->tv_sec - b->tv_sec) + 1e-6 * (a->tv_usec - b->tv_usec));
 }
-
+// PORT2: temporary:
+#define HAVE_CLOCK_REALTIME 
 #if !defined(HAVE_CLOCK_REALTIME)
 // OS X does not have clock_gettime, we fake clockid_t for the interface, and we'll implement it with clock_get_time.
 typedef int clockid_t;
