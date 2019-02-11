@@ -38,7 +38,7 @@ Copyright (c) 2006, 2015, Percona and/or its affiliates. All rights reserved.
 
 #include "portability/toku_race_tools.h"
 
-#include "ft/txn/txn.h"
+#include "txn_subst.h"
 #include "locktree/locktree.h"
 #include "locktree/lock_request.h"
 #include "util/dbt.h"
