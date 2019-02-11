@@ -430,6 +430,7 @@ inline void toku_mutex_destroy(toku_mutex_t *mutex) {
 #define toku_pthread_rwlock_wrlock(RW) \
     toku_pthread_rwlock_wrlock_with_source_location(RW, __FILE__, __LINE__)
 
+#if 0
 inline void toku_pthread_rwlock_init(
     const toku_instr_key &key,
     toku_pthread_rwlock_t *__restrict rwlock,
@@ -492,6 +493,7 @@ inline void toku_pthread_rwlock_wrunlock(toku_pthread_rwlock_t *rwlock) {
     const int r = pthread_rwlock_unlock(&rwlock->rwlock);
     assert_zero(r);
 }
+#endif
 
 static inline int toku_pthread_join(toku_pthread_t thread, void **value_ptr) {
     return pthread_join(thread, value_ptr);
