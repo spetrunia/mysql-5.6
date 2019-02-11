@@ -38,7 +38,8 @@ Copyright (c) 2006, 2015, Percona and/or its affiliates. All rights reserved.
 
 #pragma once
 
-#include "portability/toku_stdint.h"
+#include <stdint.h>
+#include <inttypes.h>
 
 #include "util/dbt.h"
 #include "util/memarena.h"
