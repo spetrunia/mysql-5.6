@@ -39,7 +39,7 @@ Copyright (c) 2006, 2015, Percona and/or its affiliates. All rights reserved.
 #pragma once
 
 #include <util/partitioned_counter.h>
-#include <util/constexpr.h>
+//PORT2: #include <util/constexpr.h>
 
 #define TOKUFT_STATUS_INIT(array,k,c,t,l,inc) do {   \
     array.status[k].keyname = #k;                    \
@@ -51,8 +51,6 @@ Copyright (c) 2006, 2015, Percona and/or its affiliates. All rights reserved.
             "Use nullptr for no column name instead of NULL, 0, etc...");    \
     constexpr_static_assert((inc) == TOKU_ENGINE_STATUS                      \
             || strcmp(#c, "nullptr"), "Missing column name.");               \
-    constexpr_static_assert(static_strncasecmp(#c, "TOKU", strlen("TOKU")),  \
-                  "Do not start column names with toku."); \
     array.status[k].include = static_cast<toku_engine_status_include_type>(inc);  \
     if (t == PARCOUNT) {                                               \
         array.status[k].value.parcount = create_partitioned_counter(); \
