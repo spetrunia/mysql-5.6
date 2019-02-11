@@ -117,10 +117,10 @@ Copyright (c) 2006, 2015, Percona and/or its affiliates. All rights reserved.
 typedef int64_t toku_off_t;
 #endif
 
-#include "toku_os.h"
-#include "toku_htod.h"
+// PORT2:#include "toku_os.h"
+// PORT2: #include "toku_htod.h"
 #include "toku_assert.h"
-#include "toku_crash.h"
+// PORT2: #include "toku_crash.h"
 #include "toku_debug_sync.h"
 
 #define UU(x) x __attribute__((__unused__))
@@ -425,26 +425,6 @@ int toku_os_get_file_size_with_source_location(int fildes,
 
 #define toku_os_get_file_size(D, S) \
     toku_os_get_file_size_with_source_location(D, S, __FILE__, __LINE__)
-
-// TODO: should this prototype be moved to toku_os.h?
-int toku_stat_with_source_location(const char *name,
-                                   toku_struct_stat *buf,
-                                   const toku_instr_key &instr_key,
-                                   const char *src_file,
-                                   uint src_line)
-    __attribute__((__visibility__("default")));
-
-#define toku_stat(N, B, K) \
-    toku_stat_with_source_location(N, B, K, __FILE__, __LINE__)
-
-int toku_os_fstat_with_source_location(int fd,
-                                       toku_struct_stat *buf,
-                                       const char *src_file,
-                                       uint src_line)
-    __attribute__((__visibility__("default")));
-
-#define toku_os_fstat(FD, B) \
-    toku_os_fstat_with_source_location(FD, B, __FILE__, __LINE__)
 
 #ifdef HAVE_PSI_FILE_INTERFACE2
 int inline_toku_os_close(int fd, const char *src_file, uint src_line);
