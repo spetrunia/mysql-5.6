@@ -41,7 +41,7 @@ Copyright (c) 2006, 2015, Percona and/or its affiliates. All rights reserved.
 #include <stdint.h>
 #include <inttypes.h>
 
-#include "ft/txn/txn_state.h"
+// PORT2: #include "ft/txn/txn_state.h"
 // PORT: #include "ft/serialize/block_table.h"
 // PORT: #include "ft/ft-status.h"
 #include "util/omt.h"
@@ -191,7 +191,7 @@ struct tokutxn {
     // underneath it
     // PORT: toku_mutex_t state_lock;
     // PORT: toku_cond_t state_cond;
-    TOKUTXN_STATE state;
+    // PORT2: TOKUTXN_STATE state;
     uint32_t num_pin; // number of threads (all hot indexes) that want this
                       // txn to not transition to commit or abort
     uint64_t client_id;
@@ -200,167 +200,7 @@ struct tokutxn {
 };
 typedef struct tokutxn *TOKUTXN;
 
-void toku_txn_lock(struct tokutxn *txn);
-void toku_txn_unlock(struct tokutxn *txn);
 
-uint64_t toku_txn_get_root_id(struct tokutxn *txn);
-bool txn_declared_read_only(struct tokutxn *txn);
-
-int toku_txn_begin_txn (
-    DB_TXN  *container_db_txn,
-    struct tokutxn *parent_tokutxn, 
-    struct tokutxn **tokutxn, 
-    struct tokulogger *logger,
-    TXN_SNAPSHOT_TYPE snapshot_type,
-    bool read_only
-    );
-
-DB_TXN * toku_txn_get_container_db_txn (struct tokutxn *tokutxn);
-void toku_txn_set_container_db_txn(struct tokutxn *txn, DB_TXN *db_txn);
-
-// toku_txn_begin_with_xid is called from recovery and has no containing DB_TXN 
-int toku_txn_begin_with_xid (
-    struct tokutxn *parent_tokutxn, 
-    struct tokutxn **tokutxn, 
-    struct tokulogger *logger, 
-    TXNID_PAIR xid, 
-    TXN_SNAPSHOT_TYPE snapshot_type,
-    DB_TXN *container_db_txn,
-    bool for_recovery,
-    bool read_only
-    );
-
-void toku_txn_update_xids_in_txn(struct tokutxn *txn, TXNID xid);
-
-int toku_txn_load_txninfo (struct tokutxn *txn, struct txninfo *info);
-
-int toku_txn_commit_txn (struct tokutxn *txn, int nosync,
-                         TXN_PROGRESS_POLL_FUNCTION poll, void *poll_extra);
-int toku_txn_commit_with_lsn(struct tokutxn *txn, int nosync, LSN oplsn,
-                             TXN_PROGRESS_POLL_FUNCTION poll, void *poll_extra);
-
-int toku_txn_abort_txn(struct tokutxn *txn,
-                       TXN_PROGRESS_POLL_FUNCTION poll, void *poll_extra);
-int toku_txn_abort_with_lsn(struct tokutxn *txn, LSN oplsn,
-                            TXN_PROGRESS_POLL_FUNCTION poll, void *poll_extra);
-
-int toku_txn_discard_txn(struct tokutxn *txn);
-
-void toku_txn_prepare_txn (struct tokutxn *txn, TOKU_XA_XID *xid, int nosync);
-// Effect: Do the internal work of preparing a transaction (does not log the prepare record).
-
-void toku_txn_get_prepared_xa_xid(struct tokutxn *txn, TOKU_XA_XID *xa_xid);
-// Effect: Fill in the XID information for a transaction.  The caller allocates the XID and the function fills in values.
-
-void toku_txn_maybe_fsync_log(struct tokulogger *logger, LSN do_fsync_lsn, bool do_fsync);
-
-void toku_txn_get_fsync_info(struct tokutxn *ttxn, bool* do_fsync, LSN* do_fsync_lsn);
-
-// Complete and destroy a txn
-void toku_txn_close_txn(struct tokutxn *txn);
-
-// Remove a txn from any live txn lists
-void toku_txn_complete_txn(struct tokutxn *txn);
-
-// Free the memory of a txn
-void toku_txn_destroy_txn(struct tokutxn *txn);
-
-struct XIDS_S *toku_txn_get_xids(struct tokutxn *txn);
-
-// Force fsync on commit
-void toku_txn_force_fsync_on_commit(struct tokutxn *txn);
-
-// PORT: void toku_txn_get_status(TXN_STATUS s);
-
-bool toku_is_txn_in_live_root_txn_list(const xid_omt_t &live_root_txn_list, TXNID xid);
-
-TXNID toku_get_oldest_in_live_root_txn_list(struct tokutxn *txn);
-
-TOKUTXN_STATE toku_txn_get_state(struct tokutxn *txn);
-
-struct tokulogger_preplist {
-    TOKU_XA_XID xid;
-    DB_TXN *txn;
-};
-int toku_logger_recover_txn (struct tokulogger *logger, struct tokulogger_preplist preplist[/*count*/], long count, /*out*/ long *retp, uint32_t flags);
-
-void toku_maybe_log_begin_txn_for_write_operation(struct tokutxn *txn);
-
-// Return whether txn (or it's descendents) have done no work.
-bool toku_txn_is_read_only(struct tokutxn *txn);
-
-void toku_txn_lock_state(struct tokutxn *txn);
-void toku_txn_unlock_state(struct tokutxn *txn);
-void toku_txn_pin_live_txn_unlocked(struct tokutxn *txn);
-void toku_txn_unpin_live_txn(struct tokutxn *txn);
-
-bool toku_txn_has_spilled_rollback(struct tokutxn *txn);
-
-void toku_txn_get_client_id(struct tokutxn *txn, uint64_t *client_id, void **client_extra);
-void toku_txn_set_client_id(struct tokutxn *txn, uint64_t client_id, void *client_extra);
-
-time_t toku_txn_get_start_time(struct tokutxn *txn);
-
-//
-// This function is used by the leafentry iterators.
-// returns TOKUDB_ACCEPT if live transaction context is allowed to read a value
-// that is written by transaction with LSN of id
-// live transaction context may read value if either id is the root ancestor of context, or if
-// id was committed before context's snapshot was taken.
-// For id to be committed before context's snapshot was taken, the following must be true:
-//  - id < context->snapshot_txnid64 AND id is not in context's live root transaction list
-// For the above to NOT be true:
-//  - id > context->snapshot_txnid64 OR id is in context's live root transaction list
-//
-int toku_txn_reads_txnid(TXNID txnid, struct tokutxn *txn, bool is_provisional UU());
-
-// For serialize / deserialize
+// PORT2: TOKUTXN_STATE toku_txn_get_state(struct tokutxn *txn);
 // PORT: this part of header is not needed:
-#if 0
-#include "ft/serialize/wbuf.h"
 
-static inline void wbuf_TXNID(struct wbuf *wb, TXNID txnid) {
-    wbuf_ulonglong(wb, txnid);
-}
-
-static inline void wbuf_nocrc_TXNID(struct wbuf *wb, TXNID txnid) {
-    wbuf_nocrc_ulonglong(wb, txnid);
-}
-
-static inline void wbuf_nocrc_TXNID_PAIR(struct wbuf *wb, TXNID_PAIR txnid) {
-    wbuf_nocrc_ulonglong(wb, txnid.parent_id64);
-    wbuf_nocrc_ulonglong(wb, txnid.child_id64);
-}
-
-static inline void wbuf_nocrc_LSN(struct wbuf *wb, LSN lsn) {
-    wbuf_nocrc_ulonglong(wb, lsn.lsn);
-}
-
-static inline void wbuf_LSN(struct wbuf *wb, LSN lsn) {
-    wbuf_ulonglong(wb, lsn.lsn);
-}
-
-#include "ft/serialize/rbuf.h"
-
-static inline void rbuf_TXNID(struct rbuf *rb, TXNID *txnid) {
-    *txnid = rbuf_ulonglong(rb);
-}
-
-static inline void rbuf_TXNID_PAIR(struct rbuf *rb, TXNID_PAIR *txnid) {
-    txnid->parent_id64 = rbuf_ulonglong(rb);
-    txnid->child_id64 = rbuf_ulonglong(rb);
-}
-
-static inline void rbuf_ma_TXNID(struct rbuf *rb, memarena *UU(ma), TXNID *txnid) {
-    rbuf_TXNID(rb, txnid);
-}
-
-static inline void rbuf_ma_TXNID_PAIR (struct rbuf *r, memarena *ma __attribute__((__unused__)), TXNID_PAIR *txnid) {
-    rbuf_TXNID_PAIR(r, txnid);
-}
-
-static inline LSN rbuf_LSN(struct rbuf *rb) {
-    LSN lsn = { .lsn = rbuf_ulonglong(rb) };
-    return lsn;
-}
-#endif
