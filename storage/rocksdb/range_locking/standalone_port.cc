@@ -121,7 +121,7 @@ int toku_keycompare(const void *key1, uint32_t key1len, const void *key2, uint32
     }
 }
 
-int toku_builtin_compare_fun(DB *db __attribute__((__unused__)), const DBT *a, const DBT*b) {
+int toku_builtin_compare_fun(const DBT *a, const DBT*b) {
     return toku_keycompare(a->data, a->size, b->data, b->size);
 }
 

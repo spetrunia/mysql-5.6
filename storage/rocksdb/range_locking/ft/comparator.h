@@ -48,7 +48,7 @@ typedef int (*ft_compare_func)(DB *db, void *arg, const DBT *a, const DBT *b);
 
 int toku_keycompare(const void *key1, uint32_t key1len, const void *key2, uint32_t key2len);
 
-int toku_builtin_compare_fun (DB *, const DBT *, const DBT*) __attribute__((__visibility__("default")));
+int toku_builtin_compare_fun (const DBT *, const DBT*) __attribute__((__visibility__("default")));
 
 namespace toku {
 
@@ -122,7 +122,7 @@ namespace toku {
                        // ..then we expect `b' to also have the memcmp magic
                        && __builtin_expect(dbt_has_memcmp_magic(b), 1)) {
                 assert(0); // psergey: this branch should not be taken.
-                return toku_builtin_compare_fun(nullptr, a, b);
+                return toku_builtin_compare_fun(a, b);
             } else {
                 // yikes, const sadness here
                 return _cmp(const_cast<DB *>(_fake_db), _cmp_arg, a, b);

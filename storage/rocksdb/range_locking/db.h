@@ -22,7 +22,6 @@ extern "C" {
 #define TOKU_OFF_T_DEFINED
 typedef int64_t toku_off_t;
 #endif
-typedef struct __toku_db_env DB_ENV;
 typedef struct __toku_db DB;
 typedef struct __toku_dbt DBT;
 struct simple_dbt {
@@ -83,72 +82,6 @@ void toku_dbt_array_resize(DBT_ARRAY *dbts, uint32_t size) __attribute__((__visi
 
 typedef void (*lock_wait_callback)(void *arg, uint64_t requesting_txnid, uint64_t blocking_txnid);
 
-struct __toku_db_env {
-  struct __toku_db_env_internal *i;
-#define db_env_struct_i(x) ((x)->i)
-  int (*checkpointing_set_period)             (DB_ENV*, uint32_t) /* Change the delay between automatic checkpoints.  0 means disabled. */;
-  int (*checkpointing_get_period)             (DB_ENV*, uint32_t*) /* Retrieve the delay between automatic checkpoints.  0 means disabled. */;
-  int (*cleaner_set_period)                   (DB_ENV*, uint32_t) /* Change the delay between automatic cleaner attempts.  0 means disabled. */;
-  int (*cleaner_get_period)                   (DB_ENV*, uint32_t*) /* Retrieve the delay between automatic cleaner attempts.  0 means disabled. */;
-  int (*cleaner_set_iterations)               (DB_ENV*, uint32_t) /* Change the number of attempts on each cleaner invocation.  0 means disabled. */;
-  int (*cleaner_get_iterations)               (DB_ENV*, uint32_t*) /* Retrieve the number of attempts on each cleaner invocation.  0 means disabled. */;
-  int (*evictor_set_enable_partial_eviction)  (DB_ENV*, bool) /* Enables or disabled partial eviction of nodes from cachetable. */;
-  int (*evictor_get_enable_partial_eviction)  (DB_ENV*, bool*) /* Retrieve the status of partial eviction of nodes from cachetable. */;
-  int (*checkpointing_postpone)               (DB_ENV*) /* Use for 'rename table' or any other operation that must be disjoint from a checkpoint */;
-  int (*checkpointing_resume)                 (DB_ENV*) /* Alert tokuft that 'postpone' is no longer necessary */;
-  int (*checkpointing_begin_atomic_operation) (DB_ENV*) /* Begin a set of operations (that must be atomic as far as checkpoints are concerned). i.e. inserting into every index in one table */;
-  int (*checkpointing_end_atomic_operation)   (DB_ENV*) /* End a set of operations (that must be atomic as far as checkpoints are concerned). */;
-  int (*set_default_bt_compare)               (DB_ENV*,int (*bt_compare) (DB *, const DBT *, const DBT *)) /* Set default (key) comparison function for all DBs in this environment.  Required for RECOVERY since you cannot open the DBs manually. */;
-  int (*get_engine_status_num_rows)           (DB_ENV*, uint64_t*)  /* return number of rows in engine status */;
-  int (*get_engine_status_text)               (DB_ENV*, char*, int)     /* Fill in status text */;
-  int (*crash)                                (DB_ENV*, const char*/*expr_as_string*/,const char */*fun*/,const char*/*file*/,int/*line*/, int/*errno*/);
-  int (*get_iname)                            (DB_ENV* env, DBT* dname_dbt, DBT* iname_dbt) /* FOR TEST ONLY: lookup existing iname */;
-  int (*get_redzone)                          (DB_ENV *env, int *redzone) /* get the redzone limit */;
-  int (*set_redzone)                          (DB_ENV *env, int redzone) /* set the redzone limit in percent of total space */;
-  int (*set_lk_max_memory)                    (DB_ENV *env, uint64_t max);
-  int (*get_lk_max_memory)                    (DB_ENV *env, uint64_t *max);
-  void (*set_update)                          (DB_ENV *env, int (*update_function)(DB *, const DBT *key, const DBT *old_val, const DBT *extra, void (*set_val)(const DBT *new_val, void *set_extra), void *set_extra));
-  int (*set_lock_timeout)                     (DB_ENV *env, uint64_t default_lock_wait_time_msec, uint64_t (*get_lock_wait_time_cb)(uint64_t default_lock_wait_time));
-  int (*get_lock_timeout)                     (DB_ENV *env, uint64_t *lock_wait_time_msec);
-  int (*set_lock_wait_callback)               (DB_ENV *env, lock_wait_callback callback);
-  DB* (*get_db_for_directory)                 (DB_ENV*);
-  void (*change_fsync_log_period)             (DB_ENV*, uint32_t);
-  void (*set_loader_memory_size)(DB_ENV *env, uint64_t (*get_loader_memory_size_callback)(void));
-  uint64_t (*get_loader_memory_size)(DB_ENV *env);
-  void (*set_killed_callback)(DB_ENV *env, uint64_t default_killed_time_msec, uint64_t (*get_killed_time_callback)(uint64_t default_killed_time_msec), int (*killed_callback)(void));
-  void (*do_backtrace)                        (DB_ENV *env);
-  int (*set_client_pool_threads)(DB_ENV *, uint32_t);
-  int (*set_cachetable_pool_threads)(DB_ENV *, uint32_t);
-  int (*set_checkpoint_pool_threads)(DB_ENV *, uint32_t);
-  void (*set_check_thp)(DB_ENV *, bool new_val);
-  bool (*get_check_thp)(DB_ENV *);
-  bool (*set_dir_per_db)(DB_ENV *, bool new_val);
-  bool (*get_dir_per_db)(DB_ENV *);
-  const char *(*get_data_dir)(DB_ENV *env);
-  void (*kill_waiter)(DB_ENV *, void *extra);
-  void *app_private;
-  void *api1_internal;
-  int  (*close) (DB_ENV *, uint32_t);
-  void (*err) (const DB_ENV *, int, const char *, ...) __attribute__ (( format (printf, 3, 4) ));
-  int  (*get_cachesize) (DB_ENV *, uint32_t *, uint32_t *, int *);
-  int  (*get_flags) (DB_ENV *, uint32_t *);
-  int  (*get_lg_max) (DB_ENV *, uint32_t*);
-  int  (*log_archive) (DB_ENV *, char **[], uint32_t);
-  int  (*open) (DB_ENV *, const char *, uint32_t, int);
-  int  (*set_cachesize) (DB_ENV *, uint32_t, uint32_t, int);
-  int  (*set_data_dir) (DB_ENV *, const char *);
-  void (*set_errcall) (DB_ENV *, void (*)(const DB_ENV *, const char *, const char *));
-  void (*set_errfile) (DB_ENV *, FILE*);
-  void (*set_errpfx) (DB_ENV *, const char *);
-  int  (*set_flags) (DB_ENV *, uint32_t, int);
-  int  (*set_lg_bsize) (DB_ENV *, uint32_t);
-  int  (*set_lg_dir) (DB_ENV *, const char *);
-  int  (*set_lg_max) (DB_ENV *, uint32_t);
-  int  (*set_lk_detect) (DB_ENV *, uint32_t);
-  int  (*set_tmp_dir) (DB_ENV *, const char *);
-  int  (*set_verbose) (DB_ENV *, uint32_t, int);
-  int  (*txn_checkpoint) (DB_ENV *, uint32_t, uint32_t, uint32_t);
-};
 struct __toku_dbt {
   void*data;
   uint32_t size;
@@ -158,43 +91,9 @@ struct __toku_dbt {
 typedef struct __toku_descriptor {
     DBT       dbt;
 } *DESCRIPTOR, DESCRIPTOR_S;
-//One header is included in 'data'
-//One header is included in 'additional for checkpoint'
+
 struct __toku_db {
-  struct __toku_db_internal *i;
-#define db_struct_i(x) ((x)->i)
-  const DBT* (*dbt_pos_infty)(void) /* Return the special DBT that refers to positive infinity in the lock table.*/;
-  const DBT* (*dbt_neg_infty)(void)/* Return the special DBT that refers to negative infinity in the lock table.*/;
-  void (*get_max_row_size) (DB*, uint32_t *max_key_size, uint32_t *max_row_size);
-  DESCRIPTOR descriptor /* saved row/dictionary descriptor for aiding in comparisons */;
   DESCRIPTOR cmp_descriptor /* saved row/dictionary descriptor for aiding in comparisons */;
-  int (*optimize)(DB*) /* Run garbage collecion and promote all transactions older than oldest. Amortized (happens during flattening) */;
-  int (*hot_optimize)(DB*, DBT*, DBT*, int (*progress_callback)(void *progress_extra, float progress), void *progress_extra, uint64_t* loops_run);
-  int (*change_pagesize)(DB*,uint32_t);
-  int (*change_readpagesize)(DB*,uint32_t);
-  int (*get_readpagesize)(DB*,uint32_t*);
-  int (*set_readpagesize)(DB*,uint32_t);
-  int (*change_fanout)(DB *db, uint32_t fanout);
-  int (*get_fanout)(DB *db, uint32_t *fanout);
-  int (*set_fanout)(DB *db, uint32_t fanout);
-  int (*set_memcmp_magic)(DB *db, uint8_t magic);
-  int (*verify_with_progress)(DB *, int (*progress_callback)(void *progress_extra, float progress), void *progress_extra, int verbose, int keep_going);
-  int (*get_fractal_tree_info64)(DB*,uint64_t*,uint64_t*,uint64_t*,uint64_t*);
-  int (*iterate_fractal_tree_block_map)(DB*,int(*)(uint64_t,int64_t,int64_t,int64_t,int64_t,void*),void*);
-  const char *(*get_dname)(DB *db);
-  int (*recount_rows)(DB* db, int (*progress_callback)(uint64_t count, uint64_t deleted, void* progress_extra), void* progress_extra);
-  void *app_private;
-  DB_ENV *dbenv;
-  void *api_internal;
-  int (*close) (DB*, uint32_t);
-  int (*fd) (DB *, int *);
-  int (*get_flags) (DB *, uint32_t *);
-  int (*get_pagesize) (DB *, uint32_t *);
-  void (*set_errfile) (DB *, FILE*);
-  int (*set_flags) (DB *, uint32_t);
-  int (*set_pagesize) (DB *, uint32_t);
-  int (*stat) (DB *, void *, uint32_t);
-  int (*verify) (DB *, const char *, const char *, FILE *, uint32_t);
 };
 #if defined(__cplusplus) || defined(__cilkplusplus)
 }
