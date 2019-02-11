@@ -38,7 +38,8 @@ Copyright (c) 2006, 2015, Percona and/or its affiliates. All rights reserved.
 
 #pragma once
 
-#include "portability/toku_stdint.h"
+#include <stdint.h>
+#include <inttypes.h>
 
 #include "ft/txn/txn_state.h"
 // PORT: #include "ft/serialize/block_table.h"
