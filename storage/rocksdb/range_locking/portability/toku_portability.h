@@ -119,7 +119,7 @@ typedef int64_t toku_off_t;
 
 // PORT2:#include "toku_os.h"
 // PORT2: #include "toku_htod.h"
-#include "toku_assert.h"
+// PORT2: #include "toku_assert.h"
 // PORT2: #include "toku_crash.h"
 #include "toku_debug_sync.h"
 
