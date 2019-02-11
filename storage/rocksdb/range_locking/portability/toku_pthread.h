@@ -43,7 +43,7 @@ Copyright (c) 2006, 2015, Percona and/or its affiliates. All rights reserved.
 #include <stdint.h>
 
 #include "toku_portability.h"
-#include "toku_assert.h"
+// PORT2: #include "toku_assert.h"
 
 // TODO: some things moved toku_instrumentation.h, not necessarily the best
 // place
