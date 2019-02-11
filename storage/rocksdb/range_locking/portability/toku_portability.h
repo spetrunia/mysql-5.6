@@ -38,7 +38,7 @@ Copyright (c) 2006, 2015, Percona and/or its affiliates. All rights reserved.
 
 #pragma once
 
-#include "toku_config.h"
+// PORT2: #include "toku_config.h"
 
 // Percona portability layer
 
@@ -74,9 +74,9 @@ Copyright (c) 2006, 2015, Percona and/or its affiliates. All rights reserved.
 #include <stdarg.h>
 #endif
 
-#if defined(HAVE_ALLOCA_H)
-# include <alloca.h>
-#endif
+// PORT2: #if defined(HAVE_ALLOCA_H)
+// PORT2: # include <alloca.h>
+// PORT2: #endif
 
 #if defined(__cplusplus)
 # include <type_traits>
@@ -90,19 +90,6 @@ Copyright (c) 2006, 2015, Percona and/or its affiliates. All rights reserved.
 
 #else // __GNUC__ was not defined, so...
 #  error "Must use a GNUC-compatible compiler."
-#endif
-
-// Define some constants for Yama in case the build-machine's software is too old.
-#if !defined(HAVE_PR_SET_PTRACER)
-/*
- * Set specific pid that is allowed to ptrace the current task.
- * A value of 0 mean "no process".
- */
-// Well defined ("Yama" in ascii)
-#define PR_SET_PTRACER 0x59616d61
-#endif
-#if !defined(HAVE_PR_SET_PTRACER_ANY)
-#define PR_SET_PTRACER_ANY ((unsigned long)-1)
 #endif
 
 #if defined(__cplusplus)
