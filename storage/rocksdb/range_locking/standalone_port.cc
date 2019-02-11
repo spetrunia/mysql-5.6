@@ -8,26 +8,6 @@
 #include "util/dbt.h"
 #include "ft/ft-status.h"
 
-// portability/toku_assert.cc
-
-#define MSGLEN 1024
-
-void
-toku_do_assert_zero_fail (uintptr_t expr, const char *expr_as_string, const char *function, const char *file, int line, int caller_errno) {
-    char msg[MSGLEN];
-    snprintf(msg, MSGLEN, "%s:%d %s: Assertion `%s == 0' failed (errno=%d) (%s=%" PRIuPTR ")\n", file, line, function, expr_as_string, caller_errno, expr_as_string, expr);
-    perror(msg);
-    assert(0 == msg);
-}
-
-void 
-toku_do_assert_fail (const char *expr_as_string, const char *function, const char *file, int line, int caller_errno) {
-    char msg[MSGLEN];
-    snprintf(msg, MSGLEN, "%s:%d %s: Assertion `%s' failed (errno=%d)\n", file, line, function, expr_as_string, caller_errno);
-    perror(msg);
-    assert(0);
-}
-
 // portability/os_malloc.cc
 
 void
@@ -86,6 +66,8 @@ toku_memory_footprint(void * p, size_t touched)
 }
 
 // ft/ft-status.c
+// PORT2: note: the @c parameter to TOKUFT_STATUS_INIT must not start with
+//   "TOKU"
 LTM_STATUS_S ltm_status;
 void LTM_STATUS_S::init() {
     if (m_initialized) return;
