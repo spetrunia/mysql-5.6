@@ -38,29 +38,14 @@ Copyright (c) 2006, 2015, Percona and/or its affiliates. All rights reserved.
 
 #pragma once
 
-// PORT2: #include "toku_config.h"
-
-// Percona portability layer
-
 #if defined(__clang__)
 #  define constexpr_static_assert(a, b)
 #else
 #  define constexpr_static_assert(a, b) static_assert(a, b)
 #endif
 
-#if defined(_MSC_VER)
-#  error "Windows is not supported."
-#endif
-
-#define DEV_NULL_FILE "/dev/null"
-
 // include here, before they get deprecated
 #include <portability/toku_atomic.h>
-
-#if defined(__GNUC__)
-// GCC linux
-
-#define DO_GCC_PRAGMA(x) _Pragma (#x)
 
 #include <stdint.h>
 #include <inttypes.h>
@@ -70,26 +55,8 @@ Copyright (c) 2006, 2015, Percona and/or its affiliates. All rights reserved.
 #include <sys/stat.h>
 #include <stdio.h>
 
-#if __FreeBSD__
-#include <stdarg.h>
-#endif
-
-// PORT2: #if defined(HAVE_ALLOCA_H)
-// PORT2: # include <alloca.h>
-// PORT2: #endif
-
 #if defined(__cplusplus)
 # include <type_traits>
-#endif
-
-#if defined(__cplusplus)
-# define cast_to_typeof(v) (decltype(v))
-#else
-# define cast_to_typeof(v) (__typeof__(v))
-#endif
-
-#else // __GNUC__ was not defined, so...
-#  error "Must use a GNUC-compatible compiler."
 #endif
 
 #if defined(__cplusplus)
@@ -100,158 +67,7 @@ Copyright (c) 2006, 2015, Percona and/or its affiliates. All rights reserved.
 # define CAST_FROM_VOIDP(name, value) name = cast_to_typeof(name) (value)
 #endif
 
-// PORT2:#include "toku_os.h"
-// PORT2: #include "toku_htod.h"
-// PORT2: #include "toku_assert.h"
-// PORT2: #include "toku_crash.h"
-// PORT2: #include "toku_debug_sync.h"
-
 #define UU(x) x __attribute__((__unused__))
-
-// Branch prediction macros.
-// If supported by the compiler, will hint in inctruction caching for likely
-// branching. Should only be used where there is a very good idea of the correct
-// branch heuristics as determined by profiling. Mostly copied from InnoDB.
-// Use:
-//   "if (FT_LIKELY(x))" where the chances of "x" evaluating true are higher
-//   "if (FT_UNLIKELY(x))" where the chances of "x" evaluating false are higher
-#if defined(__GNUC__) && (__GNUC__ > 2) && !defined(__INTEL_COMPILER)
-
-// Tell the compiler that 'expr' probably evaluates to 'constant'.
-#define FT_EXPECT(expr, constant) __builtin_expect(expr, constant)
-
-#else
-
-#warning "No FT branch prediction operations in use!"
-#define FT_EXPECT(expr, constant) (expr)
-
-#endif  // defined(__GNUC__) && (__GNUC__ > 2) && ! defined(__INTEL_COMPILER)
-
-// Tell the compiler that cond is likely to hold
-#define FT_LIKELY(cond) FT_EXPECT(bool(cond), true)
-
-// Tell the compiler that cond is unlikely to hold
-#define FT_UNLIKELY(cond) FT_EXPECT(bool(cond), false)
 
 #include "toku_instrumentation.h"
 
-#if defined(__cplusplus)
-extern "C" {
-#endif
-
-// Deprecated functions.
-#if !defined(TOKU_ALLOW_DEPRECATED) && !defined(__clang__)
-int      creat(const char *pathname, mode_t mode)   __attribute__((__deprecated__));
-int      fstat(int fd, struct stat *buf)            __attribute__((__deprecated__));
-int      stat(const char *path, struct stat *buf)   __attribute__((__deprecated__));
-int      getpid(void)                               __attribute__((__deprecated__));
-#    if defined(__FreeBSD__) || defined(__APPLE__)
-int syscall(int __sysno, ...)             __attribute__((__deprecated__));
-#    else
-long int syscall(long int __sysno, ...)             __attribute__((__deprecated__));
-#    endif
- long int sysconf(int)                   __attribute__((__deprecated__));
-int      mkdir(const char *pathname, mode_t mode)   __attribute__((__deprecated__));
-int      dup2(int fd, int fd2)                      __attribute__((__deprecated__));
-int      _dup2(int fd, int fd2)                     __attribute__((__deprecated__));
-// strdup is a macro in some libraries.
-#undef strdup
-#    if defined(__FreeBSD__)
-char*    strdup(const char *)         __malloc_like __attribute__((__deprecated__));
-#    elif defined(__APPLE__)
-char*    strdup(const char *)         __attribute__((__deprecated__));
-#    else
-char*    strdup(const char *)         __THROW __attribute_malloc__ __nonnull ((1)) __attribute__((__deprecated__));
-#    endif
-#undef __strdup
-char*    __strdup(const char *)         __attribute__((__deprecated__));
-#    ifndef DONT_DEPRECATE_WRITES
-ssize_t  write(int, const void *, size_t)           __attribute__((__deprecated__));
-ssize_t  pwrite(int, const void *, size_t, off_t)   __attribute__((__deprecated__));
-#endif
-#    ifndef DONT_DEPRECATE_MALLOC
-#     if defined(__FreeBSD__)
-extern void *malloc(size_t)                    __malloc_like __attribute__((__deprecated__));
-extern void free(void*)                        __attribute__((__deprecated__));
-extern void *realloc(void*, size_t)            __malloc_like __attribute__((__deprecated__));
-#     elif defined(__APPLE__)
-extern void *malloc(size_t)                    __attribute__((__deprecated__));
-extern void free(void*)                        __attribute__((__deprecated__));
-extern void *realloc(void*, size_t)            __attribute__((__deprecated__));
-#     else
-// PORT: remove deprecation
-// extern void *malloc(size_t)                    __THROW __attribute__((__deprecated__));
-// extern void free(void*)                        __THROW __attribute__((__deprecated__));
-// extern void *realloc(void*, size_t)            __THROW __attribute__((__deprecated__));
-#     endif
-#    endif
-#    ifndef DONT_DEPRECATE_ERRNO
-//extern int errno __attribute__((__deprecated__));
-#    endif
-#if !defined(__APPLE__)
-// Darwin headers use these types, we should not poison them
-#undef TRUE
-#undef FALSE
-# pragma GCC poison u_int8_t
-# pragma GCC poison u_int16_t
-# pragma GCC poison u_int32_t
-# pragma GCC poison u_int64_t
-# pragma GCC poison BOOL
-#if !defined(MYSQL_TOKUDB_ENGINE)
-# pragma GCC poison FALSE
-# pragma GCC poison TRUE
-#endif // MYSQL_TOKUDB_ENGINE
-#endif
-#pragma GCC poison __sync_fetch_and_add
-#pragma GCC poison __sync_fetch_and_sub
-#pragma GCC poison __sync_fetch_and_or
-#pragma GCC poison __sync_fetch_and_and
-#pragma GCC poison __sync_fetch_and_xor
-#pragma GCC poison __sync_fetch_and_nand
-#pragma GCC poison __sync_add_and_fetch
-#pragma GCC poison __sync_sub_and_fetch
-#pragma GCC poison __sync_or_and_fetch
-#pragma GCC poison __sync_and_and_fetch
-#pragma GCC poison __sync_xor_and_fetch
-#pragma GCC poison __sync_nand_and_fetch
-#pragma GCC poison __sync_bool_compare_and_swap
-#pragma GCC poison __sync_val_compare_and_swap
-#pragma GCC poison __sync_synchronize
-#pragma GCC poison __sync_lock_test_and_set
-#pragma GCC poison __sync_release
-#endif
-
-#if defined(__cplusplus)
-};
-#endif
-
-void *os_malloc(size_t) __attribute__((__visibility__("default")));
-// Effect: See man malloc(2)
-
-void *os_malloc_aligned(size_t /*alignment*/, size_t /*size*/) __attribute__((__visibility__("default")));
-// Effect: Perform a malloc(size) with the additional property that the returned pointer is a multiple of ALIGNMENT.
-// Requires: alignment is a power of two.
-
-
-void *os_realloc(void*,size_t) __attribute__((__visibility__("default")));
-// Effect: See man realloc(2)
-
-void *os_realloc_aligned(size_t/*alignment*/, void*,size_t) __attribute__((__visibility__("default")));
-// Effect: Perform a realloc(p, size) with the additional property that the returned pointer is a multiple of ALIGNMENT.
-// Requires: alignment is a power of two.
-
-void os_free(void*) __attribute__((__visibility__("default")));
-// Effect: See man free(2)
-
-size_t os_malloc_usable_size(const void *p) __attribute__((__visibility__("default")));
-// Effect: Return an estimate of the usable size inside a pointer.  If this function is not defined the memory.cc will
-//  look for the jemalloc, libc, or darwin versions of the function for computing memory footprint.
-
-int toku_portability_init(void);
-void toku_portability_destroy(void);
-
-// Effect: Return X, where X the smallest multiple of ALIGNMENT such that X>=V.
-// Requires: ALIGNMENT is a power of two
-static inline uint64_t roundup_to_multiple(uint64_t alignment, uint64_t v) {
-    return (v + alignment - 1) & ~(alignment - 1);
-}
