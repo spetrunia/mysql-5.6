@@ -352,3 +352,35 @@ select release_lock(name) from t1;
 disconnect con1;
 connection default;
 drop table t1;
+
+
+--echo #
+--echo # Check that I_S.processlist.state is set correctly now.
+--echo #
+create table t1(pk int primary key, a int) engine=rocksdb;
+insert into t1 values (1,1),(2,2),(3,3);
+
+begin;
+select * from t1 where pk=2 for update;
+
+--connect (con1,localhost,root,,)
+begin;
+set rocksdb_lock_wait_timeout=300;
+send select * from t1 where pk=2 for update;
+
+connection default;
+--echo # Now, will wait until we see con1 have state="Waiting for row lock"
+let $wait_condition=
+  SELECT COUNT(*) = 1 FROM INFORMATION_SCHEMA.PROCESSLIST WHERE STATE = "Waiting for row lock"
+  AND INFO = "select * from t1 where pk=2 for update";
+--source include/wait_condition.inc
+
+rollback;
+connection con1;
+--reap
+rollback;
+
+disconnect con1;
+connection default;
+drop table t1;
+

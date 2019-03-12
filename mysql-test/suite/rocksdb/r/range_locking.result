@@ -336,3 +336,26 @@ NULL
 disconnect con1;
 connection default;
 drop table t1;
+#
+# Check that I_S.processlist.state is set correctly now.
+#
+create table t1(pk int primary key, a int) engine=rocksdb;
+insert into t1 values (1,1),(2,2),(3,3);
+begin;
+select * from t1 where pk=2 for update;
+pk	a
+2	2
+connect  con1,localhost,root,,;
+begin;
+set rocksdb_lock_wait_timeout=300;
+select * from t1 where pk=2 for update;
+connection default;
+# Now, will wait until we see con1 have state="Waiting for row lock"
+rollback;
+connection con1;
+pk	a
+2	2
+rollback;
+disconnect con1;
+connection default;
+drop table t1;
