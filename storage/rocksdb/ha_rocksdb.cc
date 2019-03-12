@@ -2484,10 +2484,6 @@ class Rdb_transaction {
 
   bool m_is_delayed_snapshot = false;
   bool m_is_two_phase = false;
-
-  // Last known TransactionID of the underlying transaction, or UINT_MAX
-  //  for write batches. See kill_lock_wait_by_thd.
-  uint64_t m_last_trx_id;
  private:
   /*
     Number of write operations this transaction had when we took the last
@@ -3318,8 +3314,6 @@ class Rdb_transaction {
     s_tx_list.erase(this);
     RDB_MUTEX_UNLOCK_CHECK(s_tx_list_mutex);
   }
-
-  static void kill_lock_wait_by_thd(THD *thd);
 };
 
 /*
@@ -3654,8 +3648,6 @@ class Rdb_transaction_impl : public Rdb_transaction {
         rdb->BeginTransaction(write_opts, tx_opts, m_rocksdb_reuse_tx);
     m_rocksdb_reuse_tx = nullptr;
 
-    m_last_trx_id = m_rocksdb_tx->GetID();
-
     m_read_opts = rocksdb::ReadOptions();
 
     set_initial_savepoint();
@@ -3949,7 +3941,6 @@ class Rdb_writebatch_impl : public Rdb_transaction {
       : Rdb_transaction(thd), m_batch(nullptr) {
     m_batch = new rocksdb::WriteBatchWithIndex(rocksdb::BytewiseComparator(), 0,
                                                true);
-    m_last_trx_id= UINT64_MAX;
   }
 
   virtual ~Rdb_writebatch_impl() override {
@@ -5034,12 +5025,6 @@ static int rocksdb_start_tx_and_assign_read_view(
 }
 
 
-void rocksdb_kill_connection(handlerton* hton, THD* thd)
-{
-  Rdb_transaction::kill_lock_wait_by_thd(thd);
-}
-
-
 void range_endpoint_convert(const rocksdb::Slice &key,
                             std::string *res)
 {
@@ -5093,30 +5078,6 @@ int range_endpoints_compare(const char *a, size_t a_len,
   }
   else
     return res;
-}
-
-
-
-void Rdb_transaction::kill_lock_wait_by_thd(THD *thd)
-{
-  /*
-    Piggy-back on s_tx_list_mutex to avoid the situtation where the transaction
-    that we are trying to kill finishes after we got it from get_tx_from_thd()
-    but before we get its m_last_trx_id.
-
-    The lock wait may be gone, and tx->m_rocksdb_tx may change while we are
-    running the code lines below. This is why we use m_last_trx_id.  We may
-    end up with an identifier of a transaction that is already gone, but this
-    won't be a problem.
-  */
-  RDB_MUTEX_LOCK_CHECK(Rdb_transaction::s_tx_list_mutex);
-  Rdb_transaction *const tx = get_tx_from_thd(thd);
-
-  if (tx && tx->m_last_trx_id != UINT64_MAX)
-  {
-    rdb->KillLockWait(tx->m_last_trx_id);
-  }
-  RDB_MUTEX_UNLOCK_CHECK(Rdb_transaction::s_tx_list_mutex);
 }
 
 
@@ -5467,8 +5428,6 @@ static int rocksdb_init_func(void *const p) {
   rocksdb_hton->update_table_stats = rocksdb_update_table_stats;
   rocksdb_hton->flush_logs = rocksdb_flush_wal;
   rocksdb_hton->handle_single_table_select = rocksdb_handle_single_table_select;
-
-  rocksdb_hton->kill_connection= rocksdb_kill_connection;
 
   rocksdb_hton->flags = HTON_TEMPORARY_NOT_SUPPORTED |
                         HTON_SUPPORTS_EXTENDED_KEYS | HTON_CAN_RECREATE;
