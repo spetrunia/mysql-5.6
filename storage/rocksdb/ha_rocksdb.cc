@@ -5728,6 +5728,13 @@ static int rocksdb_init_func(void *const p) {
   // NO_LINT_DEBUG
   sql_print_information("RocksDB: Opening TransactionDB...");
 
+  tx_db_options.use_range_locking = rocksdb_use_range_locking;
+  if (rocksdb_use_range_locking)
+  {
+    tx_db_options.range_locking_opts.cvt_func= range_endpoint_convert;
+    tx_db_options.range_locking_opts.cmp_func= range_endpoints_compare;
+  }
+
   status = rocksdb::TransactionDB::Open(
       main_opts, tx_db_options, rocksdb_datadir, cf_descr, &cf_handles, &rdb);
 
@@ -5736,17 +5743,10 @@ static int rocksdb_init_func(void *const p) {
     DBUG_RETURN(HA_EXIT_FAILURE);
   }
 
-  //psergey-todo: this implies that TransactionDB::Open() call above did not
-  // acquire any locks (if it did, we wont be able switch to another locking
-  // system):
-  rdb->use_range_locking= rocksdb_use_range_locking; // psergey
-  
   if (rocksdb_use_range_locking)
   {
     rocksdb::RangeLockMgrControl *mgr= rdb->get_range_lock_manager();
 
-    mgr->set_endpoint_cmp_functions(range_endpoint_convert,
-                                    range_endpoints_compare);
     mgr->set_max_lock_memory(rocksdb_max_lock_memory);
     sql_print_information("RocksDB: USING NEW RANGE LOCKING");
     sql_print_information("RocksDB: Max lock memory=%lu", rocksdb_max_lock_memory);
