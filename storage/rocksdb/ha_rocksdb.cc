@@ -2755,12 +2755,13 @@ class Rdb_transaction {
 
   virtual
   rocksdb::Status lock_range(rocksdb::ColumnFamilyHandle *const cf,
-                             const rocksdb::Slice &start, bool start_inf_suffix,
-                             const rocksdb::Slice &end, bool end_inf_suffix)=0;
+                             const rocksdb::Endpoint &start,
+                             const rocksdb::Endpoint &end) = 0;
 
   rocksdb::Status lock_singlepoint_range(rocksdb::ColumnFamilyHandle *const cf,
                                          const rocksdb::Slice &point) {
-    return lock_range(cf, point, false, point, false);
+    rocksdb::Endpoint endp(point, false);
+    return lock_range(cf, endp, endp);
   }
 
   virtual bool prepare(const rocksdb::TransactionName &name) = 0;
@@ -3355,26 +3356,9 @@ class Rdb_transaction_impl : public Rdb_transaction {
   */
   virtual
   rocksdb::Status lock_range(rocksdb::ColumnFamilyHandle *const cf,
-                             const rocksdb::Slice &start,
-                             bool start_inf_suffix,
-                             const rocksdb::Slice &end,
-                             bool end_inf_suffix) override {
-    const char SUFFIX_INF= 0x0;
-    const char SUFFIX_SUP= 0x1;
-    //  GetRangeLock accepts range endpoints, not keys.
-    // Convert keys to range endpoints here.
-    // See also range_endpoint_convert() below.
-    StringBuffer<64> left;
-    left.append(start_inf_suffix? SUFFIX_SUP :SUFFIX_INF);
-    left.append(start.data(), start.size());
-
-    StringBuffer<64> right;
-    right.append(end_inf_suffix? SUFFIX_SUP :SUFFIX_INF);
-    right.append(end.data(), end.size());
-
-    return
-      m_rocksdb_tx->GetRangeLock(cf, rocksdb::Slice(left.ptr(),left.length()),
-                                 rocksdb::Slice(right.ptr(),right.length()));
+                             const rocksdb::Endpoint &start_endp,
+                             const rocksdb::Endpoint &end_endp) override {
+    return m_rocksdb_tx->GetRangeLock(cf, start_endp, end_endp);
   }
  private:
   void release_tx(void) {
@@ -3813,10 +3797,8 @@ class Rdb_writebatch_impl : public Rdb_transaction {
   }
 
   rocksdb::Status lock_range(rocksdb::ColumnFamilyHandle *const cf,
-                             const rocksdb::Slice &start,
-                             bool start_inf_suffix,
-                             const rocksdb::Slice &end,
-                             bool end_inf_suffix) override {
+                             const rocksdb::Endpoint &left_endp,
+                             const rocksdb::Endpoint &right_endp) override {
     return rocksdb::Status::OK();
   }
 
@@ -5025,62 +5007,6 @@ static int rocksdb_start_tx_and_assign_read_view(
 }
 
 
-void range_endpoint_convert(const rocksdb::Slice &key,
-                            std::string *res)
-{
-  const char SUFFIX_INF= 0x0;
-  res->clear();
-  res->append(&SUFFIX_INF, 1);
-  res->append(key.data(), key.size());
-}
-
-int range_endpoints_compare(const char *a, size_t a_len,
-                            const char *b, size_t b_len)
-{
-  size_t min_len= std::min(a_len, b_len);
-
-  //compare the values. Skip the first byte as it is the endpoint signifier
-  int res= memcmp(a+1, b+1, min_len-1);
-  if (!res)
-  {
-    if (b_len > min_len)
-    {
-      // a is shorter;
-      if (a[0] == 0)
-        return  -1; //"a is smaller"
-      else
-      {
-        // a is considered padded with 0xFF:FF:FF:FF...
-        return 1; // "a" is bigger
-      }
-    }
-    else if (a_len > min_len)
-    {
-      // the opposite of the above: b is shorter.
-      if (b[0] == 0)
-        return  1; //"b is smaller"
-      else
-      {
-        // b is considered padded with 0xFF:FF:FF:FF...
-        return -1; // "b" is bigger
-      }
-    }
-    else
-    {
-      // the lengths are equal (and the key values, too)
-      if (a[0] < b[0])
-        return -1;
-      else if (a[0] > b[0])
-        return 1;
-      else
-        return 0;
-    }
-  }
-  else
-    return res;
-}
-
-
 static int rocksdb_start_tx_with_shared_read_view(
     handlerton *const hton,    /*!< in: RocksDB handlerton */
     THD *const thd,            /*!< in: MySQL thread handle of the
@@ -5713,6 +5639,7 @@ static int rocksdb_init_func(void *const p) {
   tx_db_options.custom_mutex_factory = std::make_shared<Rdb_mutex_factory>();
   tx_db_options.write_policy =
       static_cast<rocksdb::TxnDBWritePolicy>(rocksdb_write_policy);
+  tx_db_options.use_range_locking = rocksdb_use_range_locking;
 
   status =
       check_rocksdb_options_compatibility(rocksdb_datadir, main_opts, cf_descr);
@@ -5727,13 +5654,6 @@ static int rocksdb_init_func(void *const p) {
 
   // NO_LINT_DEBUG
   sql_print_information("RocksDB: Opening TransactionDB...");
-
-  tx_db_options.use_range_locking = rocksdb_use_range_locking;
-  if (rocksdb_use_range_locking)
-  {
-    tx_db_options.range_locking_opts.cvt_func= range_endpoint_convert;
-    tx_db_options.range_locking_opts.cmp_func= range_endpoints_compare;
-  }
 
   status = rocksdb::TransactionDB::Open(
       main_opts, tx_db_options, rocksdb_datadir, cf_descr, &cf_handles, &rdb);
@@ -8556,8 +8476,9 @@ int ha_rocksdb::set_range_lock(Rdb_transaction *tx,
     end_has_inf_suffix= true;
   }
 
-  auto s= tx->lock_range(kd.get_cf(), slice, start_has_inf_suffix,
-                         end_slice, end_has_inf_suffix);
+  auto s= tx->lock_range(kd.get_cf(), 
+                         rocksdb::Endpoint(slice, start_has_inf_suffix),
+                         rocksdb::Endpoint(end_slice, end_has_inf_suffix));
   if (!s.ok()) {
     return (tx->set_status_error(table->in_use, s, kd, m_tbl_def,
                                  m_table_handler));
