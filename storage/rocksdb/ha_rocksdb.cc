@@ -690,6 +690,7 @@ static unsigned long long  // NOLINT(runtime/int)
 static ulong rocksdb_max_lock_memory;
 
 static my_bool rocksdb_use_range_locking = 0;
+static std::shared_ptr<rocksdb::RangeLockMgrHandle> range_lock_mgr;
 
 std::atomic<uint64_t> rocksdb_row_lock_deadlocks(0);
 std::atomic<uint64_t> rocksdb_row_lock_wait_timeouts(0);
@@ -5639,7 +5640,12 @@ static int rocksdb_init_func(void *const p) {
   tx_db_options.custom_mutex_factory = std::make_shared<Rdb_mutex_factory>();
   tx_db_options.write_policy =
       static_cast<rocksdb::TxnDBWritePolicy>(rocksdb_write_policy);
-  tx_db_options.use_range_locking = rocksdb_use_range_locking;
+
+  if (rocksdb_use_range_locking) {
+    range_lock_mgr.reset(
+      rocksdb::NewRangeLockManager(tx_db_options.custom_mutex_factory));
+    tx_db_options.range_lock_mgr = range_lock_mgr;
+  }
 
   status =
       check_rocksdb_options_compatibility(rocksdb_datadir, main_opts, cf_descr);
@@ -5663,11 +5669,9 @@ static int rocksdb_init_func(void *const p) {
     DBUG_RETURN(HA_EXIT_FAILURE);
   }
 
-  if (rocksdb_use_range_locking)
+  if (range_lock_mgr)
   {
-    rocksdb::RangeLockMgrControl *mgr= rdb->get_range_lock_manager();
-
-    mgr->set_max_lock_memory(rocksdb_max_lock_memory);
+    range_lock_mgr->set_max_lock_memory(rocksdb_max_lock_memory);
     sql_print_information("RocksDB: USING NEW RANGE LOCKING");
     sql_print_information("RocksDB: Max lock memory=%lu", rocksdb_max_lock_memory);
   }
@@ -13907,10 +13911,9 @@ static SHOW_VAR rocksdb_empty_status_variables[] = {
 
 static void show_rocksdb_locktree_vars(THD *thd, SHOW_VAR *var, char *buff) {
   var->type = SHOW_ARRAY;
-  if (rocksdb_use_range_locking)
+  if (range_lock_mgr)
   {
-    //TODO: 
-    rocksdb_locktree_escalation_count= rdb->get_range_lock_manager()->get_escalation_count();
+    rocksdb_locktree_escalation_count= range_lock_mgr->get_escalation_count();
     var->value = reinterpret_cast<char *>(&rocksdb_locktree_status_variables);
   }
   else
