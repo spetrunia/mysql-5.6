@@ -8480,9 +8480,18 @@ int ha_rocksdb::set_range_lock(Rdb_transaction *tx,
     end_has_inf_suffix= true;
   }
 
-  auto s= tx->lock_range(kd.get_cf(), 
-                         rocksdb::Endpoint(slice, start_has_inf_suffix),
-                         rocksdb::Endpoint(end_slice, end_has_inf_suffix));
+  rocksdb::Endpoint start_endp;
+  rocksdb::Endpoint end_endp;
+  if (kd.m_is_reverse_cf) {
+    // Flip the endpoints
+    start_endp =rocksdb::Endpoint(end_slice, !end_has_inf_suffix);
+    end_endp  = rocksdb::Endpoint(slice, !start_has_inf_suffix);
+  } else {
+    start_endp= rocksdb::Endpoint(slice, start_has_inf_suffix);
+    end_endp=   rocksdb::Endpoint(end_slice, end_has_inf_suffix);
+  }
+
+  auto s= tx->lock_range(kd.get_cf(), start_endp, end_endp);
   if (!s.ok()) {
     return (tx->set_status_error(table->in_use, s, kd, m_tbl_def,
                                  m_table_handler));
