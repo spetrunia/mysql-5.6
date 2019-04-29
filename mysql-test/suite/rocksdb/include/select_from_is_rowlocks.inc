@@ -7,10 +7,18 @@ set @rtrx_id=(select transaction_id from information_schema.rocksdb_trx
 set @indexnr= (select lpad(hex(index_number),6,'0') from information_schema.rocksdb_ddl
                where table_name='t1' and index_name='PRIMARY');
 
-select 
-  replace(column_family_id, @cf_id, "$cf_id") as COLUMN_FAMILY_ID,
-  replace(transaction_id, @rtrx_id, "$trx_id")as TRANSACTION_ID,
-  replace(`key`, @indexnr, '${indexnr}') as `KEY`,
+let $extra_where = where 1;
+
+if ($select_from_is_rowlocks_current_trx_only) 
+{
+  let $extra_where = where transaction_id=(select transaction_id from information_schema.rocksdb_trx where connection_id()=thread_id);
+}
+
+eval select 
+  replace(column_family_id, @cf_id, "\$cf_id") as COLUMN_FAMILY_ID,
+  replace(transaction_id, @rtrx_id, "\$trx_id")as TRANSACTION_ID,
+  replace(`key`, @indexnr, '\${indexnr}') as `KEY`,
   mode
-from information_schema.rocksdb_locks;
+from information_schema.rocksdb_locks $extra_where;
+
 --enable_query_log
