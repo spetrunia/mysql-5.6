@@ -379,3 +379,58 @@ rollback;
 disconnect con1;
 connection default;
 drop table t1;
+#
+# Test range locking for ranges with HA_READ_PREFIX_LAST
+#
+create table t0(a int) engine=rocksdb;
+insert into t0 values (0),(1),(2),(3),(4),(5),(6),(7),(8),(9);
+create table t1 (
+pk1 int,
+pk2 int,
+a int,
+primary key(pk1, pk2) comment '$pk_cf'
+) engine=rocksdb;
+insert into t1 
+select 
+A.a, B.a, A.a*10+B.a
+from
+t0 A, t0 B;
+connect  con1,localhost,root,,;
+connection con1;
+begin;
+insert into t1 values (0x1112222,0x1112222,0);
+connection default;
+begin;
+# Should use ref access w/o filesort:
+explain
+select * from t1
+where pk1=3
+order by pk1 desc, pk2 desc
+for update;
+id	select_type	table	type	possible_keys	key	key_len	ref	rows	Extra
+1	SIMPLE	t1	ref	PRIMARY	PRIMARY	4	const	#	Using where
+select * from t1
+where pk1=3
+order by pk1 desc, pk2 desc
+for update;
+pk1	pk2	a
+3	9	39
+3	8	38
+3	7	37
+3	6	36
+3	5	35
+3	4	34
+3	3	33
+3	2	32
+3	1	31
+3	0	30
+# select * from information_schema.rocksdb_locks; # With replacements by select_from_is_rowlocks.inc
+COLUMN_FAMILY_ID	TRANSACTION_ID	KEY	mode
+0	$trx_id	0000${indexnr}80000003 - 0100${indexnr}80000003	X
+0	$trx_id	0000${indexnr}8000000280000009	X
+rollback;
+connection con1;
+rollback;
+disconnect con1;
+connection default;
+drop table t0, t1;

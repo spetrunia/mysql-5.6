@@ -411,3 +411,55 @@ disconnect con1;
 connection default;
 drop table t1;
 
+--echo #
+--echo # Test range locking for ranges with HA_READ_PREFIX_LAST
+--echo #
+create table t0(a int) engine=rocksdb;
+insert into t0 values (0),(1),(2),(3),(4),(5),(6),(7),(8),(9);
+
+create table t1 (
+  pk1 int,
+  pk2 int,
+  a int,
+  primary key(pk1, pk2) comment '$pk_cf'
+) engine=rocksdb;
+
+insert into t1 
+select 
+  A.a, B.a, A.a*10+B.a
+from
+  t0 A, t0 B;
+
+
+# Get a lock in another connection so that the primary transaction is not using
+# STO optimization, and its locks can be seen in I_S.rocksdb_locks
+--connect (con1,localhost,root,,)
+connection con1;
+begin;
+insert into t1 values (0x1112222,0x1112222,0);
+
+connection default;
+begin;
+--echo # Should use ref access w/o filesort:
+--replace_column 9 #
+explain
+select * from t1
+where pk1=3
+order by pk1 desc, pk2 desc
+for update;
+
+select * from t1
+where pk1=3
+order by pk1 desc, pk2 desc
+for update;
+
+let $select_from_is_rowlocks_current_trx_only=1;
+--source suite/rocksdb/include/select_from_is_rowlocks.inc
+rollback;
+
+connection con1;
+rollback;
+disconnect con1;
+connection default;
+
+drop table t0, t1;

@@ -8420,6 +8420,21 @@ int ha_rocksdb::set_range_lock(Rdb_transaction *tx,
     end_slice= slice;
   }
   else if (find_flag == HA_READ_PREFIX_LAST) {
+    /*
+       We get here for queries like:
+
+         select * from t1 where pk1=const order by pk1 desc for update
+
+       assuming this uses an index on (pk1, ...)
+       We get end_key=nullptr.
+
+       The range to lock is the same as with HA_READ_KEY_EXACT above.
+    */
+    end_slice= slice;
+    start_has_inf_suffix= false;
+    end_has_inf_suffix= true;
+  } 
+  else if (find_flag == HA_READ_PREFIX_LAST_OR_PREV) {
     //psergey-todo: swap the bounds? so that the start bounds is the end?
     //Testscase!
 
