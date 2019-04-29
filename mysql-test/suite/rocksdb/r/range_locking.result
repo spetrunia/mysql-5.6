@@ -23,7 +23,6 @@ ERROR HY000: Lock wait timeout exceeded; try restarting transaction: Timeout on 
 connection con1;
 rollback;
 ## Test: check that range lock inhibits another range lock
-##  (It should not, but currently it does)
 connection con1;
 begin;
 select * from t1 where pk between 5 and 25 for update;
@@ -53,7 +52,8 @@ pk	a
 rollback;
 connection con1;
 rollback;
-## Test that locks are not released when a statement in the transaction
+## Test that locks are not released when a statement inside 
+## a transaction is rolled back
 create table t2 (
 pk int,
 a int,
@@ -91,24 +91,24 @@ begin;
 select * from t1 where pk=10 for update;
 pk	a
 10	10
-select * from information_schema.rocksdb_locks;
-COLUMN_FAMILY_ID	TRANSACTION_ID	KEY	MODE
-0	15	00000001078000000a	X
+# select * from information_schema.rocksdb_locks; # With replacements by select_from_is_rowlocks.inc
+COLUMN_FAMILY_ID	TRANSACTION_ID	KEY	mode
+$cf_id	$trx_id	0000${indexnr}8000000a	X
 delete from t1 where pk between 25 and 40;
-select * from information_schema.rocksdb_locks;
-COLUMN_FAMILY_ID	TRANSACTION_ID	KEY	MODE
-0	15	000000010780000019 - 010000010780000028	X
-0	15	00000001078000000a	X
+# select * from information_schema.rocksdb_locks; # With replacements by select_from_is_rowlocks.inc
+COLUMN_FAMILY_ID	TRANSACTION_ID	KEY	mode
+$cf_id	$trx_id	0000${indexnr}80000019 - 0100${indexnr}80000028	X
+$cf_id	$trx_id	0000${indexnr}8000000a	X
 rollback;
 begin;
 # The following will show a range lock on 2-9 and also a point lock on 10.
 # This is how things currently work.
 select * from t1 where pk between 2 and 9 for update;
 pk	a
-select * from information_schema.rocksdb_locks;
-COLUMN_FAMILY_ID	TRANSACTION_ID	KEY	MODE
-0	16	00000001078000000a	X
-0	16	000000010780000002 - 010000010780000009	X
+# select * from information_schema.rocksdb_locks; # With replacements by select_from_is_rowlocks.inc
+COLUMN_FAMILY_ID	TRANSACTION_ID	KEY	mode
+$cf_id	$trx_id	0000${indexnr}8000000a	X
+$cf_id	$trx_id	0000${indexnr}80000002 - 0100${indexnr}80000009	X
 rollback;
 drop table t1;
 #
