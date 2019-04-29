@@ -458,6 +458,28 @@ let $select_from_is_rowlocks_current_trx_only=1;
 --source suite/rocksdb/include/select_from_is_rowlocks.inc
 rollback;
 
+--echo #
+--echo # Test range locking for ranges with HA_READ_PREFIX_LAST_OR_PREV
+--echo #
+
+begin;
+--echo # Should use range access with 2 keyparts and w/o filesort:
+--replace_column 9 #
+explain 
+select * from t1 
+where pk1=4 and pk2 between 5 and 8 
+order by pk1 desc, pk2 desc
+for update;
+
+select * from t1
+where pk1=4  and pk2 between 5 and 8 
+order by pk1 desc, pk2 desc
+for update;
+
+let $select_from_is_rowlocks_current_trx_only=1;
+--source suite/rocksdb/include/select_from_is_rowlocks.inc
+rollback;
+
 connection con1;
 rollback;
 disconnect con1;
