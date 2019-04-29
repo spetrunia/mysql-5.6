@@ -10,8 +10,6 @@
 
 show variables like 'rocksdb_use_range_locking';
 
-# Test 1: see that ranges are indeed lockied.
-
 eval create table t1 (
   pk int,
   a int,
@@ -37,7 +35,6 @@ connection con1;
 rollback;
 
 --echo ## Test: check that range lock inhibits another range lock
---echo ##  (It should not, but currently it does)
 connection con1;
 begin;
 select * from t1 where pk between 5 and 25 for update;
@@ -65,7 +62,8 @@ rollback;
 connection con1;
 rollback;
 
---echo ## Test that locks are not released when a statement in the transaction
+--echo ## Test that locks are not released when a statement inside 
+--echo ## a transaction is rolled back
 eval
 create table t2 (
   pk int,
@@ -114,17 +112,18 @@ insert into t1 values
 begin;
 select * from t1 where pk=10 for update;
 
-select * from information_schema.rocksdb_locks;
+--source suite/rocksdb/include/select_from_is_rowlocks.inc
 
 delete from t1 where pk between 25 and 40;
-select * from information_schema.rocksdb_locks;
+
+--source suite/rocksdb/include/select_from_is_rowlocks.inc
 
 rollback;
 begin;
 --echo # The following will show a range lock on 2-9 and also a point lock on 10.
 --echo # This is how things currently work.
 select * from t1 where pk between 2 and 9 for update;
-select * from information_schema.rocksdb_locks;
+--source suite/rocksdb/include/select_from_is_rowlocks.inc
 rollback;
 
 drop table t1;
