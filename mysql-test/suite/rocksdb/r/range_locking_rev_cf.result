@@ -97,8 +97,8 @@ COLUMN_FAMILY_ID	TRANSACTION_ID	KEY	MODE
 delete from t1 where pk between 25 and 40;
 select * from information_schema.rocksdb_locks;
 COLUMN_FAMILY_ID	TRANSACTION_ID	KEY	MODE
-0	15	000000010780000019 - 010000010780000028	X
 0	15	00000001078000000a	X
+0	15	000000010780000028 - 010000010780000019	X
 rollback;
 begin;
 # The following will show a range lock on 2-9 and also a point lock on 10.
@@ -107,8 +107,8 @@ select * from t1 where pk between 2 and 9 for update;
 pk	a
 select * from information_schema.rocksdb_locks;
 COLUMN_FAMILY_ID	TRANSACTION_ID	KEY	MODE
+0	16	000000010780000009 - 010000010780000002	X
 0	16	00000001078000000a	X
-0	16	000000010780000002 - 010000010780000009	X
 rollback;
 drop table t1;
 #
