@@ -429,6 +429,32 @@ COLUMN_FAMILY_ID	TRANSACTION_ID	KEY	mode
 $cf_id	$trx_id	0000${indexnr}80000003 - 0100${indexnr}80000003	X
 $cf_id	$trx_id	0000${indexnr}8000000280000009	X
 rollback;
+#
+# Test range locking for ranges with HA_READ_PREFIX_LAST_OR_PREV
+#
+begin;
+# Should use range access with 2 keyparts and w/o filesort:
+explain 
+select * from t1 
+where pk1=4 and pk2 between 5 and 8 
+order by pk1 desc, pk2 desc
+for update;
+id	select_type	table	type	possible_keys	key	key_len	ref	rows	Extra
+1	SIMPLE	t1	range	PRIMARY	PRIMARY	8	NULL	#	Using where
+select * from t1
+where pk1=4  and pk2 between 5 and 8 
+order by pk1 desc, pk2 desc
+for update;
+pk1	pk2	a
+4	8	48
+4	7	47
+4	6	46
+4	5	45
+# select * from information_schema.rocksdb_locks; # With replacements by select_from_is_rowlocks.inc
+COLUMN_FAMILY_ID	TRANSACTION_ID	KEY	mode
+$cf_id	$trx_id	0000${indexnr}8000000480000005 - 0100${indexnr}8000000480000008	X
+$cf_id	$trx_id	0000${indexnr}8000000480000004	X
+rollback;
 connection con1;
 rollback;
 disconnect con1;

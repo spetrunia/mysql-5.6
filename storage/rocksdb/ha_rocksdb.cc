@@ -8395,12 +8395,14 @@ int ha_rocksdb::index_read_map(uchar *const buf, const uchar *const key,
 int ha_rocksdb::set_range_lock(Rdb_transaction *tx,
                                 const Rdb_key_def &kd, 
                                 const enum ha_rkey_function &find_flag,
-                                const rocksdb::Slice &slice,
+                                const rocksdb::Slice &slice_arg,
                                 const key_range *const end_key)
 {
   rocksdb::Slice end_slice;
   uchar end_slice_buf[MAX_KEY_LENGTH];
   bool start_has_inf_suffix = false, end_has_inf_suffix = false;
+  rocksdb::Slice slice(slice_arg);
+
 
   if (m_lock_rows != RDB_LOCK_WRITE || !rocksdb_use_range_locking) {
     return 0;
@@ -8435,18 +8437,30 @@ int ha_rocksdb::set_range_lock(Rdb_transaction *tx,
     end_has_inf_suffix= true;
   } 
   else if (find_flag == HA_READ_PREFIX_LAST_OR_PREV) {
-    //psergey-todo: swap the bounds? so that the start bounds is the end?
-    //Testscase!
-
     /*
-      We have made the kd.successor(m_sk_packed_tuple) call above.
+       We get here for queries like:
 
-      The slice is at least Rdb_key_def::INDEX_NUMBER_SIZE bytes long.
+         select * from t1 where pk1=const1 and pk2 between const2 and const3 
+         order by pk1 desc 
+         for update
+
+       assuming this uses an index on (pk1, pk2).
+       The slice has the right endpoint: {const1, const3}
+       the end_key has the left endpoint: {const1, const2}.
     */
-    memcpy(end_slice_buf, slice.data(), slice.size());
-    kd.successor(end_slice_buf, slice.size());
-    end_slice= rocksdb::Slice((const char*)end_slice_buf, slice.size());
-    start_has_inf_suffix= end_has_inf_suffix= false;
+
+    // Move the right endpoint from slice to end_slice
+    end_slice= slice;
+   
+    // Pack the left endpoint and make "slice" point to it
+    uchar pack_buffer[MAX_KEY_LENGTH];
+    uint end_slice_size=
+        kd.pack_index_tuple(table, pack_buffer, end_slice_buf,
+                            end_key->key, end_key->keypart_map);
+    slice= rocksdb::Slice(reinterpret_cast<char *>(end_slice_buf),
+                              end_slice_size);
+    start_has_inf_suffix= false;
+    end_has_inf_suffix= true;
   }
   else if (end_key) {
     // Known start range bounds: HA_READ_KEY_OR_NEXT, HA_READ_AFTER_KEY
