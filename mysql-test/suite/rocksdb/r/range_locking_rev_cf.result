@@ -4,7 +4,7 @@ rocksdb_use_range_locking	ON
 create table t1 (
 pk int,
 a int,
-primary key (pk) comment 'default'
+primary key (pk) comment 'rev:cf1'
 ) engine=rocksdb;
 insert into t1 values
 (10,10),(20,20),(30,30);
@@ -57,8 +57,8 @@ rollback;
 create table t2 (
 pk int,
 a int,
-primary key (pk) comment 'default',
-unique key(a) comment 'default'
+primary key (pk) comment 'rev:cf1',
+unique key(a) comment ''
 ) engine=rocksdb;
 insert into t2 values (1,1),(2,2);
 begin;
@@ -83,7 +83,7 @@ drop table t1;
 create table t1 (
 pk int,
 a int,
-primary key (pk) comment 'default'
+primary key (pk) comment 'rev:cf1'
 ) engine=rocksdb;
 insert into t1 values
 (10,10),(20,20),(30,30);
@@ -120,7 +120,7 @@ create table t1 (
 kp1 int not null,
 kp2 int not null,
 a int,
-primary key(kp1, kp2) comment 'default'
+primary key(kp1, kp2) comment 'rev:cf1'
 ) engine=rocksdb;
 insert into t1 select 1, a, 1234 from t0;
 insert into t1 select 2, a, 1234 from t0;
@@ -160,7 +160,7 @@ create table t1 (
 kp1 int not null,
 kp2 int not null,
 a int,
-key(kp1, kp2) comment 'default'
+key(kp1, kp2) comment 'rev:cf1'
 ) engine=rocksdb;
 insert into t1 select  1, a, 1234 from t0;
 insert into t1 values (2, 3, 1234);
@@ -235,7 +235,7 @@ drop table t1;
 create table t1 (
 pk int,
 a int,
-primary key (pk) comment 'default'
+primary key (pk) comment 'rev:cf1'
 ) engine=rocksdb;
 insert into t1 values (1,1),(2,2),(3,3),(4,4),(5,5),(6,6);
 connect  con1,localhost,root,,;
@@ -244,12 +244,12 @@ connection con1;
 begin;
 select * from t1;
 pk	a
-1	1
-2	2
-3	3
-4	4
-5	5
 6	6
+5	5
+4	4
+3	3
+2	2
+1	1
 # TRX2: Make a change that TRX1 will not see
 connection default;
 update t1 set a=2222 where pk between 3 and 5;
@@ -262,12 +262,12 @@ commit;
 connection default;
 select * from t1;
 pk	a
-1	1
-2	2
-3	2223
-4	2223
-5	2223
 6	6
+5	2223
+4	2223
+3	2223
+2	2
+1	1
 disconnect con1;
 connection default;
 drop table t1;
@@ -277,7 +277,7 @@ drop table t1;
 create table t1 (
 pk int,
 a int,
-primary key (pk) comment 'default'
+primary key (pk) comment 'rev:cf1'
 ) engine=rocksdb;
 insert into t1 values (1,1),(2,2),(3,3),(4,4),(5,5),(6,6);
 connect  con1,localhost,root,,;
@@ -286,12 +286,12 @@ connection con1;
 begin;
 select * from t1;
 pk	a
-1	1
-2	2
-3	3
-4	4
-5	5
 6	6
+5	5
+4	4
+3	3
+2	2
+1	1
 # TRX2: Make a change that TRX1 will not see
 connection default;
 update t1 set a=222 where pk=2;
@@ -313,52 +313,12 @@ disconnect con1;
 connection default;
 drop table t1;
 #
-# Another no-snapshot-checking test, this time for single-statement
-# transaction
-#
-create table t1 (
-pk int,
-a int,
-name varchar(16),
-primary key(pk) comment 'default'
-) engine=rocksdb;
-insert into t1 values (1,1, 'row1'), (2,2,'row2');
-connect  con1,localhost,root,,;
-connection con1;
-select get_lock('row1', 100);
-get_lock('row1', 100)
-1
-connection default;
-# The following will read the first row (1,1,'row1'), and stop.
-update t1 set a=a+100 where get_lock(name, 1000)=1;
-connection con1;
-update t1 set a=5 where pk=2;
-select release_lock('row1');
-release_lock('row1')
-1
-connection default;
-# Look at the row with pk=2:
-#  2, 105, row2 - means the UPDATE was reading current data (Correct)
-#  2, 102, row - means the UPDATE read the snapshot (incorrect)
-select * from t1;
-pk	a	name
-1	101	row1
-2	105	row2
-# Try releasing both locks (in 5.6, we will be holding only the second one)
-select release_lock(name) from t1;
-release_lock(name)
-NULL
-1
-disconnect con1;
-connection default;
-drop table t1;
-#
 # Check that I_S.processlist.state is set correctly now.
 #
 create table t1(
 pk int,
 a int,
-primary key(pk) comment 'default'
+primary key(pk) comment 'rev:cf1'
 ) engine=rocksdb;
 insert into t1 values (1,1),(2,2),(3,3);
 begin;
