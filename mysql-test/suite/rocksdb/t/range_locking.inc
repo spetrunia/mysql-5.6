@@ -417,6 +417,7 @@ drop table t1;
 create table t0(a int) engine=rocksdb;
 insert into t0 values (0),(1),(2),(3),(4),(5),(6),(7),(8),(9);
 
+eval
 create table t1 (
   pk1 int,
   pk2 int,
