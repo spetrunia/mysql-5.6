@@ -1,9 +1,13 @@
+select @@rocksdb_use_range_locking;
+@@rocksdb_use_range_locking
+1
+create table t0 (a int);
+insert into t0 values (0),(1),(2),(3),(4),(5),(6),(7),(8),(9);
 create table t1 (
 pk int primary key,
 a int
 ) engine=rocksdb;
-insert into t1 values
-(0,0),(1,1),(2,2),(3,3),(4,4),(5,5),(6,6),(7,7),(8,8),(9,9);
+insert into t1 select a,a from t0;
 # A basic test for shared locks
 begin;
 select * from t1 where pk=3 for update;
@@ -51,5 +55,74 @@ $cf_id	$TRX1_ID	0000${indexnr}80000003	X
 $cf_id	$TRX1_ID	0000${indexnr}80000005	X
 connection default;
 rollback;
-disconnect con1;
+#
+# Test if a read lock inhibits write locks
+#
+begin;
+select * from t1 where pk=2 lock in share mode;
+pk	a
+2	2
+select * from t1 where pk=8 for update;
+pk	a
+8	8
+connection con1;
+begin;
+select * from t1 where pk=2 for update;
+ERROR HY000: Lock wait timeout exceeded; try restarting transaction: Timeout on index: test.t1.PRIMARY
+select * from t1 where pk between 0 and 4 for update;
+ERROR HY000: Lock wait timeout exceeded; try restarting transaction: Timeout on index: test.t1.PRIMARY
+delete from t1 where pk=2;
+ERROR HY000: Lock wait timeout exceeded; try restarting transaction: Timeout on index: test.t1.PRIMARY
+# Get a shared lock
+select * from t1 where pk=2 lock in share mode;
+pk	a
+2	2
+# But this should still prevent us from acquiring a write lock on that value: 
+select * from t1 where pk=2 for update;
+ERROR HY000: Lock wait timeout exceeded; try restarting transaction: Timeout on index: test.t1.PRIMARY
+rollback;
+connection default;
+rollback;
 drop table t1;
+create table t1 (
+pk int not null primary key,
+a int not null,
+key(a)
+) engine=rocksdb;
+insert into t1
+select
+A.a+10*B.a+100*C.a+1000*D.a, A.a+10*B.a+100*C.a+1000*D.a
+from
+t0 A, t0 B, t0 C, t0 D;
+set global rocksdb_force_flush_memtable_now=1;
+connection con1;
+begin;
+select * from t1 where pk=900 for update;
+pk	a
+900	900
+connection default;
+begin;
+explain
+select * from t1 where a between 2 and 5 lock in share mode;
+id	select_type	table	type	possible_keys	key	key_len	ref	rows	Extra
+1	SIMPLE	t1	range	a	a	4	NULL	#	Using where; Using index
+select * from t1 where a between 2 and 5 lock in share mode;
+pk	a
+2	2
+3	3
+4	4
+5	5
+# TODO: the following prints an X lock on the range, because GetRangeLock API
+#       currently only supports write locks:
+# select * from information_schema.rocksdb_locks; # With replacements by select_from_rocksdb_locks.inc
+COLUMN_FAMILY_ID	TRANSACTION_ID	KEY	mode
+$cf_id	$TRX1_ID	0000${indexnr}80000002	S
+$cf_id	$TRX1_ID	0000${indexnr}80000003	S
+$cf_id	$TRX1_ID	0000${indexnr}80000004	S
+$cf_id	$TRX1_ID	0000${indexnr}80000005	S
+$cf_id	$TRX1_ID	0000${indexnr}80000006	S
+$cf_id	$TRX1_ID	000000010780000002 - 010000010780000005	X
+$cf_id	$TRX2_ID	0000${indexnr}80000384	X
+rollback;
+disconnect con1;
+drop table t0,t1;

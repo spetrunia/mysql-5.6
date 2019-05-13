@@ -5,14 +5,18 @@
 --source suite/rocksdb/include/have_range_locking.inc
 --enable_connect_log
 
+select @@rocksdb_use_range_locking;
+
+create table t0 (a int);
+insert into t0 values (0),(1),(2),(3),(4),(5),(6),(7),(8),(9);
+
 create table t1 (
   pk int primary key,
   a int
 ) engine=rocksdb;
 
 
-insert into t1 values
-(0,0),(1,1),(2,2),(3,3),(4,4),(5,5),(6,6),(7,7),(8,8),(9,9);
+insert into t1 select a,a from t0;
 
 --echo # A basic test for shared locks
 
@@ -48,7 +52,72 @@ select * from t1 where pk=5 for update;
 connection default;
 rollback;
 
-disconnect con1;
+--echo #
+--echo # Test if a read lock inhibits write locks
+--echo #
+
+begin;
+select * from t1 where pk=2 lock in share mode;
+select * from t1 where pk=8 for update;
+
+connection con1;
+begin;
+
+--error ER_LOCK_WAIT_TIMEOUT
+select * from t1 where pk=2 for update;
+
+--error ER_LOCK_WAIT_TIMEOUT
+select * from t1 where pk between 0 and 4 for update;
+
+--error ER_LOCK_WAIT_TIMEOUT
+delete from t1 where pk=2;
+
+--echo # Get a shared lock
+select * from t1 where pk=2 lock in share mode;
+
+--echo # But this should still prevent us from acquiring a write lock on that value: 
+--error ER_LOCK_WAIT_TIMEOUT
+select * from t1 where pk=2 for update;
+
+rollback;
+connection default;
+rollback;
 
 drop table t1;
+create table t1 (
+  pk int not null primary key,
+  a int not null,
+  key(a)
+) engine=rocksdb;
+
+insert into t1
+select
+  A.a+10*B.a+100*C.a+1000*D.a, A.a+10*B.a+100*C.a+1000*D.a
+from
+  t0 A, t0 B, t0 C, t0 D;
+set global rocksdb_force_flush_memtable_now=1;
+
+connection con1;
+begin;
+select * from t1 where pk=900 for update;
+let $TRX2_ID=`select transaction_id from information_schema.rocksdb_trx where thread_id=connection_id()`;
+
+connection default;
+begin;
+--replace_column 9 #
+explain
+select * from t1 where a between 2 and 5 lock in share mode;
+select * from t1 where a between 2 and 5 lock in share mode;
+let $TRX1_ID=`select transaction_id from information_schema.rocksdb_trx where thread_id=connection_id()`;
+
+--echo # TODO: the following prints an X lock on the range, because GetRangeLock API
+--echo #       currently only supports write locks:
+
+--source suite/rocksdb/include/select_from_rocksdb_locks.inc
+
+rollback;
+
+disconnect con1;
+
+drop table t0,t1;
 

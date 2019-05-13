@@ -8168,8 +8168,7 @@ int ha_rocksdb::set_range_lock(Rdb_transaction *tx,
   bool start_has_inf_suffix = false, end_has_inf_suffix = false;
   rocksdb::Slice slice(slice_arg);
 
-
-  if (m_lock_rows != RDB_LOCK_WRITE || !rocksdb_use_range_locking) {
+  if (m_lock_rows == RDB_LOCK_NONE || !rocksdb_use_range_locking) {
     return 0;
   }
 
