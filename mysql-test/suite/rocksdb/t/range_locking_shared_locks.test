@@ -1,0 +1,54 @@
+#
+# Test for shared lock support for range locking
+#
+--source include/have_rocksdb.inc
+--source suite/rocksdb/include/have_range_locking.inc
+--enable_connect_log
+
+create table t1 (
+  pk int primary key,
+  a int
+) engine=rocksdb;
+
+
+insert into t1 values
+(0,0),(1,1),(2,2),(3,3),(4,4),(5,5),(6,6),(7,7),(8,8),(9,9);
+
+--echo # A basic test for shared locks
+
+begin;
+select * from t1 where pk=3 for update;
+select * from t1 where pk=5 lock in share mode;
+let $TRX1_ID=`select transaction_id from information_schema.rocksdb_trx where thread_id=connection_id()`;
+
+connect (con1,localhost,root,,);
+connection con1;
+begin;
+select * from t1 where pk=5 lock in share mode;
+let $TRX2_ID=`select transaction_id from information_schema.rocksdb_trx where thread_id=connection_id()`;
+--echo # Now for pk=5 we should see two locks by TRX1 and TRX2 with mode=S:
+--source suite/rocksdb/include/select_from_rocksdb_locks.inc
+
+rollback;
+--echo # Now, TRX2_ID should be gone:
+--source suite/rocksdb/include/select_from_rocksdb_locks.inc
+
+connection default;
+
+--echo # Get a read lock on pk=3 (where we have a write lock).
+--echo #  The result should be that we will still have a write lock
+select * from t1 where pk=3 for update;
+--source suite/rocksdb/include/select_from_rocksdb_locks.inc
+
+--echo # Get a write lock on pk=5 (where we have a read lock).
+--echo #  The result should be that we will have a write lock.
+select * from t1 where pk=5 for update;
+--source suite/rocksdb/include/select_from_rocksdb_locks.inc
+
+connection default;
+rollback;
+
+disconnect con1;
+
+drop table t1;
+

@@ -1,0 +1,55 @@
+create table t1 (
+pk int primary key,
+a int
+) engine=rocksdb;
+insert into t1 values
+(0,0),(1,1),(2,2),(3,3),(4,4),(5,5),(6,6),(7,7),(8,8),(9,9);
+# A basic test for shared locks
+begin;
+select * from t1 where pk=3 for update;
+pk	a
+3	3
+select * from t1 where pk=5 lock in share mode;
+pk	a
+5	5
+connect  con1,localhost,root,,;
+connection con1;
+begin;
+select * from t1 where pk=5 lock in share mode;
+pk	a
+5	5
+# Now for pk=5 we should see two locks by TRX1 and TRX2 with mode=S:
+# select * from information_schema.rocksdb_locks; # With replacements by select_from_rocksdb_locks.inc
+COLUMN_FAMILY_ID	TRANSACTION_ID	KEY	mode
+$cf_id	$TRX1_ID	0000${indexnr}80000003	X
+$cf_id	$TRX1_ID	0000${indexnr}80000005	S
+$cf_id	$TRX2_ID	0000${indexnr}80000005	S
+rollback;
+# Now, TRX2_ID should be gone:
+# select * from information_schema.rocksdb_locks; # With replacements by select_from_rocksdb_locks.inc
+COLUMN_FAMILY_ID	TRANSACTION_ID	KEY	mode
+$cf_id	$TRX1_ID	0000${indexnr}80000003	X
+$cf_id	$TRX1_ID	0000${indexnr}80000005	S
+connection default;
+# Get a read lock on pk=3 (where we have a write lock).
+#  The result should be that we will still have a write lock
+select * from t1 where pk=3 for update;
+pk	a
+3	3
+# select * from information_schema.rocksdb_locks; # With replacements by select_from_rocksdb_locks.inc
+COLUMN_FAMILY_ID	TRANSACTION_ID	KEY	mode
+$cf_id	$TRX1_ID	0000${indexnr}80000003	X
+$cf_id	$TRX1_ID	0000${indexnr}80000005	S
+# Get a write lock on pk=5 (where we have a read lock).
+#  The result should be that we will have a write lock.
+select * from t1 where pk=5 for update;
+pk	a
+5	5
+# select * from information_schema.rocksdb_locks; # With replacements by select_from_rocksdb_locks.inc
+COLUMN_FAMILY_ID	TRANSACTION_ID	KEY	mode
+$cf_id	$TRX1_ID	0000${indexnr}80000003	X
+$cf_id	$TRX1_ID	0000${indexnr}80000005	X
+connection default;
+rollback;
+disconnect con1;
+drop table t1;
