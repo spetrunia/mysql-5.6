@@ -5644,7 +5644,7 @@ static int rocksdb_init_func(void *const p) {
   if (rocksdb_use_range_locking) {
     range_lock_mgr.reset(
       rocksdb::NewRangeLockManager(tx_db_options.custom_mutex_factory));
-    tx_db_options.range_lock_mgr = range_lock_mgr;
+    tx_db_options.lock_mgr_handle = range_lock_mgr;
   }
 
   status =
