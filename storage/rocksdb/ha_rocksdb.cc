@@ -2065,7 +2065,8 @@ protected:
   virtual bool commit_no_binlog() = 0;
   virtual rocksdb::Iterator *
   get_iterator(const rocksdb::ReadOptions &options,
-               rocksdb::ColumnFamilyHandle *column_family) = 0;
+               rocksdb::ColumnFamilyHandle *column_family,
+               bool use_locking_iterator=false) = 0;
 
   /*
     @detail
@@ -2594,7 +2595,8 @@ public:
                bool skip_bloom_filter, bool fill_cache,
                const rocksdb::Slice &eq_cond_lower_bound,
                const rocksdb::Slice &eq_cond_upper_bound,
-               bool read_current = false, bool create_snapshot = true) {
+               bool read_current = false, bool create_snapshot = true,
+               bool use_locking_iterator= false) {
     // Make sure we are not doing both read_current (which implies we don't
     // want a snapshot) and create_snapshot which makes sure we create
     // a snapshot
@@ -2620,7 +2622,7 @@ public:
     if (read_current) {
       options.snapshot = nullptr;
     }
-    return get_iterator(options, column_family);
+    return get_iterator(options, column_family, use_locking_iterator);
   }
 
   virtual bool is_tx_started() const = 0;
@@ -2982,9 +2984,13 @@ public:
 
   rocksdb::Iterator *
   get_iterator(const rocksdb::ReadOptions &options,
-               rocksdb::ColumnFamilyHandle *const column_family) override {
+               rocksdb::ColumnFamilyHandle *const column_family,
+               bool use_locking_iterator) override {
     global_stats.queries[QUERIES_RANGE].inc();
-    return m_rocksdb_tx->GetIterator(options, column_family);
+    if (use_locking_iterator)
+      return m_rocksdb_tx->GetLockingIterator(options, column_family);
+    else
+      return m_rocksdb_tx->GetIterator(options, column_family);
   }
 
   const rocksdb::Transaction *get_rdb_trx() const { return m_rocksdb_tx; }
@@ -3278,7 +3284,9 @@ public:
 
   rocksdb::Iterator *
   get_iterator(const rocksdb::ReadOptions &options,
-               rocksdb::ColumnFamilyHandle *const column_family) override {
+               rocksdb::ColumnFamilyHandle *const column_family,
+               bool use_locking_iterator) override {
+    DBUG_ASSERT(!use_locking_iterator);
     const auto it = rdb->NewIterator(options);
     return m_batch->NewIteratorWithBase(it);
   }
@@ -8161,17 +8169,20 @@ int ha_rocksdb::set_range_lock(Rdb_transaction *tx,
                                 const Rdb_key_def &kd, 
                                 const enum ha_rkey_function &find_flag,
                                 const rocksdb::Slice &slice_arg,
-                                const key_range *const end_key)
+                                const key_range *const end_key,
+                                bool *use_locking_iterator)
 {
   rocksdb::Slice end_slice;
   uchar end_slice_buf[MAX_KEY_LENGTH];
   bool start_has_inf_suffix = false, end_has_inf_suffix = false;
   rocksdb::Slice slice(slice_arg);
+  *use_locking_iterator= false;
 
 
   if (m_lock_rows != RDB_LOCK_WRITE || !rocksdb_use_range_locking) {
     return 0;
   }
+  bool no_end_endpoint= false;
 
   /*
     The 'slice' parameter has the left endpoint of the range to lock.
@@ -8272,6 +8283,7 @@ int ha_rocksdb::set_range_lock(Rdb_transaction *tx,
     kd.get_infimum_key(end_slice_buf, &end_slice_size);
     end_slice= rocksdb::Slice((char*)end_slice_buf, end_slice_size);
     end_has_inf_suffix= true;
+    no_end_endpoint= true;
   }
 
   rocksdb::Endpoint start_endp;
@@ -8283,6 +8295,12 @@ int ha_rocksdb::set_range_lock(Rdb_transaction *tx,
   } else {
     start_endp= rocksdb::Endpoint(slice, start_has_inf_suffix);
     end_endp=   rocksdb::Endpoint(end_slice, end_has_inf_suffix);
+  }
+  
+  if (no_end_endpoint)
+  {
+    *use_locking_iterator= true;
+    return 0;
   }
 
   auto s= tx->lock_range(kd.get_cf(), start_endp, end_endp);
@@ -8393,10 +8411,11 @@ int ha_rocksdb::index_read_map_impl(uchar *const buf, const uchar *const key,
 
   Rdb_transaction *const tx = get_or_create_tx(table->in_use);
   const bool is_new_snapshot = !tx->has_snapshot();
-
+  bool use_locking_iterator;
   rocksdb::Slice lock_slice(reinterpret_cast<const char *>(m_sk_packed_tuple),
                                     packed_size);
-  if ((rc = set_range_lock(tx, kd, find_flag, lock_slice, end_key)))
+  if ((rc = set_range_lock(tx, kd, find_flag, lock_slice, end_key,
+                           &use_locking_iterator)))
     DBUG_RETURN(rc);
 
   int bytes_changed_by_succ = 0;
@@ -8426,7 +8445,8 @@ int ha_rocksdb::index_read_map_impl(uchar *const buf, const uchar *const key,
       This will open the iterator and position it at a record that's equal or
       greater than the lookup tuple.
     */
-    setup_scan_iterator(kd, &slice, use_all_keys, eq_cond_len);
+    setup_scan_iterator(kd, &slice, use_all_keys, eq_cond_len,
+                        use_locking_iterator);
 
     /*
       Once we are positioned on from above, move to the position we really
@@ -9053,7 +9073,8 @@ int ha_rocksdb::index_first_intern(uchar *const buf) {
   // Loop as long as we get a deadlock error AND we end up creating the
   // snapshot here (i.e. it did not exist prior to this)
   for (;;) {
-    setup_scan_iterator(kd, &index_key, false, key_start_matching_bytes);
+    setup_scan_iterator(kd, &index_key, false, key_start_matching_bytes,
+                        (m_lock_rows != RDB_LOCK_NONE));
     m_scan_it->Seek(index_key);
     m_skip_scan_it_next_call = true;
 
@@ -9142,7 +9163,8 @@ int ha_rocksdb::index_last_intern(uchar *const buf) {
   // Loop as long as we get a deadlock error AND we end up creating the
   // snapshot here (i.e. it did not exist prior to this)
   for (;;) {
-    setup_scan_iterator(kd, &index_key, false, key_end_matching_bytes);
+    setup_scan_iterator(kd, &index_key, false, key_end_matching_bytes,
+                        (m_lock_rows != RDB_LOCK_NONE));
     m_scan_it->SeekForPrev(index_key);
     m_skip_scan_it_next_call = false;
 
@@ -10098,7 +10120,8 @@ void ha_rocksdb::setup_iterator_bounds(
 void ha_rocksdb::setup_scan_iterator(const Rdb_key_def &kd,
                                      rocksdb::Slice *const slice,
                                      const bool use_all_keys,
-                                     const uint eq_cond_len) {
+                                     const uint eq_cond_len,
+                                     bool use_locking_iterator) {
   DBUG_ASSERT(slice->size() >= eq_cond_len);
 
   Rdb_transaction *const tx = get_or_create_tx(table->in_use);
@@ -10138,7 +10161,8 @@ void ha_rocksdb::setup_scan_iterator(const Rdb_key_def &kd,
     and
     re-create Iterator.
   */
-  if (m_scan_it_skips_bloom != skip_bloom) {
+  // psergey-todo: create Locking Iterator here..
+  if (m_scan_it_skips_bloom != skip_bloom || use_locking_iterator) {
     release_scan_iterator();
   }
 
@@ -10159,7 +10183,10 @@ void ha_rocksdb::setup_scan_iterator(const Rdb_key_def &kd,
     } else {
       m_scan_it = tx->get_iterator(kd.get_cf(), skip_bloom, fill_cache,
                                    m_scan_it_lower_bound_slice,
-                                   m_scan_it_upper_bound_slice);
+                                   m_scan_it_upper_bound_slice,
+                                   /*read_current*/ false,
+                                   /*create_snapshot*/true,
+                                   use_locking_iterator);
     }
     m_scan_it_skips_bloom = skip_bloom;
   }
