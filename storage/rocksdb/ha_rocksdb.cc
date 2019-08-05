@@ -76,6 +76,9 @@
 #include "./rdb_psi.h"
 #include "./rdb_threads.h"
 
+#include "./rdb_locking_iter.h"
+
+
 // Internal MySQL APIs not exposed in any header.
 extern "C" {
 /**
@@ -2987,8 +2990,13 @@ public:
                rocksdb::ColumnFamilyHandle *const column_family,
                bool use_locking_iterator) override {
     global_stats.queries[QUERIES_RANGE].inc();
-    if (use_locking_iterator)
-      return m_rocksdb_tx->GetLockingIterator(options, column_family);
+    if (use_locking_iterator) {
+      // psergey-todo: use our own locking iterator
+      // psergey-todo: refresh the snapshot
+      rocksdb::Iterator *base_iter = 
+        m_rocksdb_tx->GetIterator(options, column_family);
+      return GetLockingIterator(m_rocksdb_tx, base_iter, options, column_family);
+    }
     else
       return m_rocksdb_tx->GetIterator(options, column_family);
   }
