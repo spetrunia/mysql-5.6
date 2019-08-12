@@ -2991,11 +2991,7 @@ public:
                bool use_locking_iterator) override {
     global_stats.queries[QUERIES_RANGE].inc();
     if (use_locking_iterator) {
-      // psergey-todo: use our own locking iterator
-      // psergey-todo: refresh the snapshot
-      rocksdb::Iterator *base_iter = 
-        m_rocksdb_tx->GetIterator(options, column_family);
-      return GetLockingIterator(m_rocksdb_tx, base_iter, options, column_family);
+      return GetLockingIterator(m_rocksdb_tx, options, column_family);
     }
     else
       return m_rocksdb_tx->GetIterator(options, column_family);

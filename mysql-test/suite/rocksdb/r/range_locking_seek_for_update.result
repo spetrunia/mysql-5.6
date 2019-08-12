@@ -72,3 +72,96 @@ rollback;
 disconnect con1;
 connection default;
 drop table t0, t1;
+#
+#  Concurrent tests: let one thread do SeekForUpdate and the other
+#   interfere by committing modifications
+#
+create table t0(a int primary key);
+insert into t0 values (0),(1),(2),(3),(4),(5),(6),(7),(8),(9);
+create table t1 (
+pk int,
+a int,
+primary key (pk)
+) engine=rocksdb;
+insert into t1 select
+A.a + B.a*10 + C.a*100,
+A.a + B.a*10 + C.a*100
+from 
+t0 A, t0 B, t0 C;
+select * from t1 where pk<10;
+pk	a
+0	0
+1	1
+2	2
+3	3
+4	4
+5	5
+6	6
+7	7
+8	8
+9	9
+delete from t1 where pk<10;
+select * from t1 where pk<10;
+pk	a
+# Test what happens when another transaction commits a row
+# right before the range we are about to lock (nothing)
+explain 
+select * from t1 where pk >=5 order by pk limit 3 for update;
+id	select_type	table	type	possible_keys	key	key_len	ref	rows	Extra
+1	SIMPLE	t1	range	PRIMARY	PRIMARY	4	NULL	#	Using where
+begin;
+set debug_sync='rocksdb.locking_iter_scan SIGNAL about_to_lock_range WAIT_FOR spoiler_inserted';
+select * from t1 where pk >=5 order by pk limit 3 for update;
+connect  con1,localhost,root,,;
+connection con1;
+set debug_sync='now WAIT_FOR about_to_lock_range';
+insert into t1 values (3,3);
+set debug_sync='now SIGNAL spoiler_inserted';
+connection default;
+pk	a
+10	10
+11	11
+12	12
+rollback;
+delete from t1 where pk=3;
+#
+# Now, repeat the test but let the other transaction insert the row into
+# the range we are locking
+explain 
+select * from t1 where pk >=5 order by pk limit 1 for update;
+id	select_type	table	type	possible_keys	key	key_len	ref	rows	Extra
+1	SIMPLE	t1	range	PRIMARY	PRIMARY	4	NULL	#	Using where
+begin;
+set debug_sync='rocksdb.locking_iter_scan SIGNAL about_to_lock_range WAIT_FOR spoiler_inserted';
+select * from t1 where pk >=5 order by pk limit 1 for update;
+connection con1;
+set debug_sync='now WAIT_FOR about_to_lock_range';
+insert into t1 values (8,8);
+set debug_sync='now SIGNAL spoiler_inserted';
+connection default;
+pk	a
+8	8
+# select * from information_schema.rocksdb_locks; # With replacements by select_from_is_rowlocks.inc
+COLUMN_FAMILY_ID	TRANSACTION_ID	KEY	mode
+$cf_id	$trx_id	0000${indexnr}80000005 - 0000${indexnr}8000000a	X
+rollback;
+delete from t1 where pk=8;
+#
+# Repeat the third time, this time deleting the row that SeekForUpdate saw
+#
+insert into t1 values (7,7);
+begin;
+set debug_sync='rocksdb.locking_iter_scan SIGNAL about_to_lock_range WAIT_FOR spoiler_inserted';
+select * from t1 where pk >=5 order by pk limit 1 for update;
+connection con1;
+set debug_sync='now WAIT_FOR about_to_lock_range';
+delete from t1 where pk=7;
+set debug_sync='now SIGNAL spoiler_inserted';
+connection default;
+pk	a
+10	10
+# select * from information_schema.rocksdb_locks; # With replacements by select_from_is_rowlocks.inc
+COLUMN_FAMILY_ID	TRANSACTION_ID	KEY	mode
+$cf_id	$trx_id	0000${indexnr}80000005 - 0000${indexnr}8000000a	X
+rollback;
+drop table t0,t1;
