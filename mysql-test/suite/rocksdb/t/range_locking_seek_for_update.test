@@ -157,9 +157,36 @@ set debug_sync='now SIGNAL spoiler_inserted';
 connection default;
 reap;
 
---source suite/rocksdb/include/select_from_is_rowlocks.inc
+rollback;
+
+--echo #
+--echo # Repeat the above test, but let the read fail with ER_LOCK_WAIT_TIMEOUT
+--echo # error. MyRocks code should now be prepared that data reads cause this
+--echo # error
+--echo #
+insert into t1 values (7,7);
+
+begin;
+
+set debug_sync='rocksdb.locking_iter_scan SIGNAL about_to_lock_range WAIT_FOR spoiler_inserted';
+send 
+select * from t1 where pk >=5 order by pk limit 1 for update;
+
+connection con1;
+set debug_sync='now WAIT_FOR about_to_lock_range';
+begin;
+delete from t1 where pk=7;
+set debug_sync='now SIGNAL spoiler_inserted';
+
+connection default;
+--error ER_LOCK_WAIT_TIMEOUT
+reap;
 
 rollback;
+
+connection con1;
+rollback;
+connection default;
 
 --echo #
 --echo # Backward scan test
@@ -188,6 +215,36 @@ rollback;
 begin;
 select * from t1 where pk <1007 order by pk desc limit 2 for update;
 --source suite/rocksdb/include/select_from_is_rowlocks.inc
+
+connection con1;
+rollback;
+
+connection default;
+rollback;
+
+--echo #
+--echo # Backward scan test 2: error condition
+--echo #
+connection con1;
+begin;
+select * from t1 where pk=1010 for update;
+
+connection default;
+begin;
+--error ER_LOCK_WAIT_TIMEOUT
+select * from t1 order by pk desc limit 2 for update;
+rollback;
+
+connection con1;
+rollback;
+begin;
+select * from t1 where pk=1007 for update;
+
+connection default;
+begin;
+--error ER_LOCK_WAIT_TIMEOUT
+select * from t1 order by pk desc limit 2 for update;
+rollback;
 
 connection con1;
 rollback;

@@ -7771,6 +7771,17 @@ int ha_rocksdb::read_before_key(const Rdb_key_def &kd,
   return HA_ERR_KEY_NOT_FOUND;
 }
 
+
+inline int iter_status_to_retval(rocksdb::Iterator *it, int not_found_code) {
+  if (it->Valid())
+    return HA_EXIT_SUCCESS;
+  rocksdb::Status s= it->status();
+  if (s.IsTimedOut())
+    return HA_ERR_LOCK_WAIT_TIMEOUT;
+  //TODO: should we handle other kinds of errors?
+  return not_found_code;
+}
+
 int ha_rocksdb::read_after_key(const Rdb_key_def &kd,
                                const rocksdb::Slice &key_slice,
                                const int64_t ttl_filter_ts) {
@@ -7794,7 +7805,9 @@ int ha_rocksdb::read_after_key(const Rdb_key_def &kd,
     rocksdb_smart_next(kd.m_is_reverse_cf, m_scan_it);
   }
 
-  return is_valid(m_scan_it) ? HA_EXIT_SUCCESS : HA_ERR_KEY_NOT_FOUND;
+  return is_valid(m_scan_it) ? 
+           HA_EXIT_SUCCESS : 
+           iter_status_to_retval(m_scan_it, HA_ERR_KEY_NOT_FOUND);
 }
 
 int ha_rocksdb::position_to_correct_key(
@@ -10327,7 +10340,8 @@ int ha_rocksdb::rnd_next_with_direction(uchar *const buf, bool move_forward) {
 
       In this case, we should return EOF.
     */
-    DBUG_RETURN(HA_ERR_END_OF_FILE);
+    rc = HA_ERR_END_OF_FILE;
+    DBUG_RETURN(m_scan_it ? iter_status_to_retval(m_scan_it, rc) : rc);
   }
 
   for (;;) {
@@ -10341,7 +10355,7 @@ int ha_rocksdb::rnd_next_with_direction(uchar *const buf, bool move_forward) {
     }
 
     if (!is_valid(m_scan_it)) {
-      rc = HA_ERR_END_OF_FILE;
+      rc = iter_status_to_retval(m_scan_it, HA_ERR_END_OF_FILE);
       break;
     }
 
