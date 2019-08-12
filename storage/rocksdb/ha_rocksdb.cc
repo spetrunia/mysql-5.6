@@ -8242,6 +8242,38 @@ int ha_rocksdb::set_range_lock(Rdb_transaction *tx,
     start_has_inf_suffix= false;
     end_has_inf_suffix= true;
   }
+  else if (find_flag == HA_READ_BEFORE_KEY) {
+    /*
+      We get here for queris like
+        select * from t1 
+        where              pk <1007 order by pk desc limit 2 for update
+        select * from t1 
+        where pk >=800 and pk <1007 order by pk desc limit 2 for update
+    */
+
+    // Move the right endpoint from slice to end_slice
+    end_slice= slice;
+
+    if (end_key) {
+      uchar pack_buffer[MAX_KEY_LENGTH];
+      uint end_slice_size=
+          kd.pack_index_tuple(table, pack_buffer, end_slice_buf,
+                              end_key->key, end_key->keypart_map);
+
+      slice= rocksdb::Slice(reinterpret_cast<char *>(end_slice_buf),
+                            end_slice_size);
+
+      end_has_inf_suffix= false;
+      no_end_endpoint= false;
+    } else {
+      uint end_slice_size;
+      kd.get_infimum_key(end_slice_buf, &end_slice_size);
+      slice= rocksdb::Slice((char*)end_slice_buf, end_slice_size);
+
+      no_end_endpoint= true;
+    }
+
+  }
   else if (end_key) {
     // Known start range bounds: HA_READ_KEY_OR_NEXT, HA_READ_AFTER_KEY
     if (find_flag == HA_READ_KEY_OR_NEXT)
@@ -9078,7 +9110,7 @@ int ha_rocksdb::index_first_intern(uchar *const buf) {
   // snapshot here (i.e. it did not exist prior to this)
   for (;;) {
     setup_scan_iterator(kd, &index_key, false, key_start_matching_bytes,
-                        (m_lock_rows != RDB_LOCK_NONE));
+                        (m_lock_rows != RDB_LOCK_NONE && !end_range));
     m_scan_it->Seek(index_key);
     m_skip_scan_it_next_call = true;
 
@@ -9168,7 +9200,7 @@ int ha_rocksdb::index_last_intern(uchar *const buf) {
   // snapshot here (i.e. it did not exist prior to this)
   for (;;) {
     setup_scan_iterator(kd, &index_key, false, key_end_matching_bytes,
-                        (m_lock_rows != RDB_LOCK_NONE));
+                        (m_lock_rows != RDB_LOCK_NONE && !end_range));
     m_scan_it->SeekForPrev(index_key);
     m_skip_scan_it_next_call = false;
 

@@ -161,5 +161,38 @@ reap;
 
 rollback;
 
+--echo #
+--echo # Backward scan test
+--echo #
+connection con1;
+begin;
+select * from t1 where pk=500 for update;
+connection default;
+
+insert into t1 values 
+  (1001, 1001),
+  (1005, 1005),
+  (1007, 1007),
+  (1010, 1010);
+
+begin;
+select * from t1 order by pk desc limit 2 for update;
+
+let $select_from_is_rowlocks_current_trx_only=1;
+
+--echo #  The below will lock from pk=1007 (0x3ef) till the end of the table:
+--source suite/rocksdb/include/select_from_is_rowlocks.inc
+
+rollback;
+
+begin;
+select * from t1 where pk <1007 order by pk desc limit 2 for update;
+--source suite/rocksdb/include/select_from_is_rowlocks.inc
+
+connection con1;
+rollback;
+
+disconnect con1;
+connection default;
 drop table t0,t1;
 

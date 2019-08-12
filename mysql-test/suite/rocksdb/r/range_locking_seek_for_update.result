@@ -164,4 +164,40 @@ pk	a
 COLUMN_FAMILY_ID	TRANSACTION_ID	KEY	mode
 $cf_id	$trx_id	0000${indexnr}80000005 - 0000${indexnr}8000000a	X
 rollback;
+#
+# Backward scan test
+#
+connection con1;
+begin;
+select * from t1 where pk=500 for update;
+pk	a
+500	500
+connection default;
+insert into t1 values 
+(1001, 1001),
+(1005, 1005),
+(1007, 1007),
+(1010, 1010);
+begin;
+select * from t1 order by pk desc limit 2 for update;
+pk	a
+1010	1010
+1007	1007
+#  The below will lock from pk=1007 (0x3ef) till the end of the table:
+# select * from information_schema.rocksdb_locks; # With replacements by select_from_is_rowlocks.inc
+COLUMN_FAMILY_ID	TRANSACTION_ID	KEY	mode
+$cf_id	$trx_id	0000${indexnr}800003ef - 0000${indexnr+1}	X
+rollback;
+begin;
+select * from t1 where pk <1007 order by pk desc limit 2 for update;
+pk	a
+1005	1005
+1001	1001
+# select * from information_schema.rocksdb_locks; # With replacements by select_from_is_rowlocks.inc
+COLUMN_FAMILY_ID	TRANSACTION_ID	KEY	mode
+$cf_id	$trx_id	0000${indexnr}800003e9 - 0000${indexnr}800003ef	X
+connection con1;
+rollback;
+disconnect con1;
+connection default;
 drop table t0,t1;

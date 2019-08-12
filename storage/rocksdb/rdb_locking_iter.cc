@@ -10,10 +10,9 @@ namespace myrocks {
 
 rocksdb::Iterator* GetLockingIterator(
     rocksdb::Transaction *trx,
-    rocksdb::Iterator *base_iter,
     const rocksdb::ReadOptions& read_options,
     rocksdb::ColumnFamilyHandle* column_family) {
-  return new LockingIterator(base_iter, column_family, trx);
+  return new LockingIterator(trx, column_family, read_options);
 }
 
 /*
@@ -23,11 +22,13 @@ rocksdb::Iterator* GetLockingIterator(
 */
 
 void LockingIterator::Seek(const rocksdb::Slice& target) {
+  iter_ = txn_->GetIterator(read_opts_, cfh_);
   iter_->Seek(target);
   ScanForward(target, false);
 }
 
 void LockingIterator::SeekForPrev(const rocksdb::Slice& target) {
+  iter_ = txn_->GetIterator(read_opts_, cfh_);
   iter_->SeekForPrev(target);
   ScanBackward(target, false);
 }

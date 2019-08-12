@@ -1,4 +1,8 @@
 
+/* MySQL header files */
+#include "./handler.h"   /* handler */
+#include "./debug_sync.h"
+
 /* MyRocks header files */
 #include "./ha_rocksdb.h"
 
@@ -28,15 +32,19 @@ namespace myrocks {
 //
 class LockingIterator : public rocksdb::Iterator {
 
-  rocksdb::ColumnFamilyHandle* cfh_;
   rocksdb::Transaction *txn_;
+  rocksdb::ColumnFamilyHandle* cfh_;
+  rocksdb::ReadOptions read_opts_;
   rocksdb::Iterator *iter_;
   rocksdb::Status status_;
 
+
  public:
-  LockingIterator(rocksdb::Iterator *iter, rocksdb::ColumnFamilyHandle *cfh,
-                  rocksdb::Transaction *txn) :
-    cfh_(cfh), txn_(txn), iter_(iter), status_(rocksdb::Status::InvalidArgument()) {}
+  LockingIterator(rocksdb::Transaction *txn,
+                  rocksdb::ColumnFamilyHandle *cfh,
+                  const rocksdb::ReadOptions& opts
+                  ) :
+    txn_(txn), cfh_(cfh), read_opts_(opts), iter_(nullptr), status_(rocksdb::Status::InvalidArgument()) {}
 
   virtual bool Valid() const override { return status_.ok(); }
 
@@ -69,7 +77,6 @@ class LockingIterator : public rocksdb::Iterator {
   }
 
  private:
-
   template <bool forward> void Scan(const rocksdb::Slice& target, bool call_next) {
     if (!iter_->Valid()) {
       status_ = iter_->status();
@@ -81,6 +88,7 @@ class LockingIterator : public rocksdb::Iterator {
         note: the underlying iterator checks iterator bounds, so we don't need
         to check them here
       */
+      DEBUG_SYNC(current_thd, "rocksdb.locking_iter_scan");
       auto end_key = iter_->key();
       if (forward)
         status_ = txn_->GetRangeLock(cfh_, rocksdb::Endpoint(target), rocksdb::Endpoint(end_key));
@@ -91,19 +99,26 @@ class LockingIterator : public rocksdb::Iterator {
         // Failed to get a lock (most likely lock wait timeout)
         return;
       }
+      std::string end_key_copy= end_key.ToString();
 
       //Ok, now we have a lock which is inhibiting modifications in the range
       // Somebody might have done external modifications, though:
       //  - removed the key we've found
       //  - added a key before that key.
 
-      //TODO: refresh the iterator here? 
+      // First, refresh the iterator:
+      delete iter_;
+      iter_ = txn_->GetIterator(read_opts_, cfh_);
+
+      // Then, try seeking to the same row
       if (forward)
         iter_->Seek(target);
       else
         iter_->SeekForPrev(target);
 
-      if (call_next && iter_->Valid()) {
+      auto cmp= cfh_->GetComparator();
+
+      if (call_next && iter_->Valid() && !cmp->Compare(iter_->key(), target)) {
         if (forward)
           iter_->Next();
         else
@@ -112,12 +127,12 @@ class LockingIterator : public rocksdb::Iterator {
 
       if (iter_->Valid()) {
         int invert= forward? 1 : -1;
-        if (cfh_->GetComparator()->Compare(iter_->key(), end_key) * invert <= 0) {
-          // Ok, the key is within the range.
+        if (cmp->Compare(iter_->key(), rocksdb::Slice(end_key_copy)) * invert <= 0) {
+          // Ok, the found key is within the range.
           status_ = rocksdb::Status::OK();
           break;
         } else {
-          // We've got a row but it is outside the range we've locked.
+          // We've got a key but it is outside the range we've locked.
           // Re-try the lock-and-read step.
           continue;
         }
@@ -140,10 +155,9 @@ class LockingIterator : public rocksdb::Iterator {
   }
 };
 
-rocksdb::Iterator* GetLockingIterator(
-    rocksdb::Transaction *trx,
-    rocksdb::Iterator *base_iter,
-    const rocksdb::ReadOptions& read_options,
-    rocksdb::ColumnFamilyHandle* column_family);
+rocksdb::Iterator*
+GetLockingIterator(rocksdb::Transaction *trx,
+                   const rocksdb::ReadOptions& read_options,
+                   rocksdb::ColumnFamilyHandle* column_family);
 
 } // namespace myrocks
