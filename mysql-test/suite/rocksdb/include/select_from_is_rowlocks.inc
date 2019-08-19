@@ -7,6 +7,9 @@ set @rtrx_id=(select transaction_id from information_schema.rocksdb_trx
 set @indexnr= (select lpad(hex(index_number),6,'0') from information_schema.rocksdb_ddl
                where table_name='t1' and index_name='PRIMARY');
 
+set @indexnr_next= (select lpad(hex(index_number+1),6,'0') from information_schema.rocksdb_ddl
+                    where table_name='t1' and index_name='PRIMARY');
+
 let $extra_where = where 1;
 
 if ($select_from_is_rowlocks_current_trx_only) 
@@ -15,9 +18,12 @@ if ($select_from_is_rowlocks_current_trx_only)
 }
 
 eval select 
-  replace(column_family_id, @cf_id, "\$cf_id") as COLUMN_FAMILY_ID,
-  replace(transaction_id, @rtrx_id, "\$trx_id")as TRANSACTION_ID,
-  replace(`key`, @indexnr, '\${indexnr}') as `KEY`,
+  replace(column_family_id, @cf_id, "\$cf_id")  as COLUMN_FAMILY_ID,
+  replace(transaction_id, @rtrx_id, "\$trx_id") as TRANSACTION_ID,
+  replace(
+     replace(`key`, @indexnr, '\${indexnr}'),
+     @indexnr_next, '\${indexnr+1}'
+  ) as `KEY`,
   mode
 from information_schema.rocksdb_locks $extra_where;
 

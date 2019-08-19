@@ -4239,6 +4239,7 @@ check_reverse_order:
   }
 
   DBUG_ASSERT(can_skip_sorting);
+  //psergey-todo: candidate location #1. select_limit vs join->unit->select_limit_cnt
 
   /*
     Update query plan with access pattern for doing 
