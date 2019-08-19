@@ -23,14 +23,14 @@ select * from t1 where pk=5 lock in share mode;
 pk	a
 5	5
 # Now for pk=5 we should see two locks by TRX1 and TRX2 with mode=S:
-# select * from information_schema.rocksdb_locks; # With replacements by select_from_rocksdb_locks.inc
+# select * from information_schema.rocksdb_locks; # With replacements by select_from_is_rowlocks.inc
 COLUMN_FAMILY_ID	TRANSACTION_ID	KEY	mode
 $cf_id	$TRX1_ID	0000${indexnr}80000003	X
 $cf_id	$TRX1_ID	0000${indexnr}80000005	S
 $cf_id	$TRX2_ID	0000${indexnr}80000005	S
 rollback;
 # Now, TRX2_ID should be gone:
-# select * from information_schema.rocksdb_locks; # With replacements by select_from_rocksdb_locks.inc
+# select * from information_schema.rocksdb_locks; # With replacements by select_from_is_rowlocks.inc
 COLUMN_FAMILY_ID	TRANSACTION_ID	KEY	mode
 $cf_id	$TRX1_ID	0000${indexnr}80000003	X
 $cf_id	$TRX1_ID	0000${indexnr}80000005	S
@@ -40,7 +40,7 @@ connection default;
 select * from t1 where pk=3 for update;
 pk	a
 3	3
-# select * from information_schema.rocksdb_locks; # With replacements by select_from_rocksdb_locks.inc
+# select * from information_schema.rocksdb_locks; # With replacements by select_from_is_rowlocks.inc
 COLUMN_FAMILY_ID	TRANSACTION_ID	KEY	mode
 $cf_id	$TRX1_ID	0000${indexnr}80000003	X
 $cf_id	$TRX1_ID	0000${indexnr}80000005	S
@@ -49,7 +49,7 @@ $cf_id	$TRX1_ID	0000${indexnr}80000005	S
 select * from t1 where pk=5 for update;
 pk	a
 5	5
-# select * from information_schema.rocksdb_locks; # With replacements by select_from_rocksdb_locks.inc
+# select * from information_schema.rocksdb_locks; # With replacements by select_from_is_rowlocks.inc
 COLUMN_FAMILY_ID	TRANSACTION_ID	KEY	mode
 $cf_id	$TRX1_ID	0000${indexnr}80000003	X
 $cf_id	$TRX1_ID	0000${indexnr}80000005	X
@@ -112,14 +112,14 @@ pk	a
 3	3
 4	4
 5	5
-# select * from information_schema.rocksdb_locks; # With replacements by select_from_rocksdb_locks.inc
+# select * from information_schema.rocksdb_locks; # With replacements by select_from_is_rowlocks.inc
 COLUMN_FAMILY_ID	TRANSACTION_ID	KEY	mode
+$cf_id	$TRX1_ID	0000${indexnr+1}80000002 - 0100${indexnr+1}80000005	X
 $cf_id	$TRX1_ID	0000${indexnr}80000002	S
 $cf_id	$TRX1_ID	0000${indexnr}80000003	S
 $cf_id	$TRX1_ID	0000${indexnr}80000004	S
 $cf_id	$TRX1_ID	0000${indexnr}80000005	S
 $cf_id	$TRX1_ID	0000${indexnr}80000006	S
-$cf_id	$TRX1_ID	000000010780000002 - 010000010780000005	X
 $cf_id	$TRX2_ID	0000${indexnr}80000384	X
 rollback;
 disconnect con1;
@@ -173,7 +173,7 @@ insert into t1 select A.a, 0 from t0 A;
 connection con1;
 # CON1: exclusive locks on 2000-2010:
 insert into t1 select 2000+A.a, 0 from t0 A;
-# select * from information_schema.rocksdb_locks; # With replacements by select_from_rocksdb_locks.inc
+# select * from information_schema.rocksdb_locks; # With replacements by select_from_is_rowlocks.inc
 COLUMN_FAMILY_ID	TRANSACTION_ID	KEY	mode
 $cf_id	$TRX2_ID	0000${indexnr}80000000	X
 $cf_id	$TRX2_ID	0000${indexnr}80000001	X
@@ -218,7 +218,7 @@ variable_name='rocksdb_locktree_current_lock_memory');
 set global rocksdb_max_lock_memory = cast(@cur_mem_usage+4 as SIGNED);
 connection con1;
 insert into t1 select 3000+A.a, 0 from t0 A;
-# select * from information_schema.rocksdb_locks; # With replacements by select_from_rocksdb_locks.inc
+# select * from information_schema.rocksdb_locks; # With replacements by select_from_is_rowlocks.inc
 COLUMN_FAMILY_ID	TRANSACTION_ID	KEY	mode
 $cf_id	$TRX2_ID	0000${indexnr}80000000 - 0000${indexnr}80000009	X
 $cf_id	$TRX1_ID	0000${indexnr}800003e9	S
