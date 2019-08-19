@@ -9399,7 +9399,8 @@ int ha_rocksdb::index_first_intern(uchar *const buf) {
   // snapshot here (i.e. it did not exist prior to this)
   for (;;) {
     setup_scan_iterator(kd, &index_key, false, key_start_matching_bytes,
-                        (m_lock_rows != RDB_LOCK_NONE && !end_range));
+                        (rocksdb_use_range_locking &&
+                         m_lock_rows != RDB_LOCK_NONE && !end_range));
     m_scan_it->Seek(index_key);
     m_skip_scan_it_next_call = true;
 
@@ -9490,7 +9491,8 @@ int ha_rocksdb::index_last_intern(uchar *const buf) {
   // snapshot here (i.e. it did not exist prior to this)
   for (;;) {
     setup_scan_iterator(kd, &index_key, false, key_end_matching_bytes,
-                        (m_lock_rows != RDB_LOCK_NONE && !end_range));
+                        (rocksdb_use_range_locking &&
+                         m_lock_rows != RDB_LOCK_NONE && !end_range));
     m_scan_it->SeekForPrev(index_key);
     m_skip_scan_it_next_call = false;
 

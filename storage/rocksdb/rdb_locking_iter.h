@@ -49,6 +49,10 @@ class LockingIterator : public rocksdb::Iterator {
     txn_(txn), cfh_(cfh), read_opts_(opts), iter_(nullptr),
     status_(rocksdb::Status::InvalidArgument()), valid_(false) {}
 
+  ~LockingIterator() {
+    delete iter_;
+  }
+
   virtual bool Valid() const override { return valid_; }
 
   // Note: MyRocks doesn't ever call these:
