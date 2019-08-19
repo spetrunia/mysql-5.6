@@ -320,14 +320,16 @@ class ha_rocksdb : public my_core::handler {
                                   rocksdb::Slice *lower_bound_slice,
                                   rocksdb::Slice *upper_bound_slice);
   void setup_scan_iterator(const Rdb_key_def &kd, rocksdb::Slice *slice,
-                           const bool use_all_keys, const uint eq_cond_len)
+                           const bool use_all_keys, const uint eq_cond_len,
+                           bool use_locking_iterator=false)
       MY_ATTRIBUTE((__nonnull__));
 
   int set_range_lock(Rdb_transaction *tx,
                       const Rdb_key_def &kd, 
                       const enum ha_rkey_function &find_flag,
                       const rocksdb::Slice &slice,
-                      const key_range *const end_key);
+                      const key_range *const end_key,
+                      bool *use_locking_iterator);
 
   void release_scan_iterator(void);
 
