@@ -31,23 +31,23 @@ begin;
 select * from t1 where pk=5 lock in share mode;
 let $TRX2_ID=`select transaction_id from information_schema.rocksdb_trx where thread_id=connection_id()`;
 --echo # Now for pk=5 we should see two locks by TRX1 and TRX2 with mode=S:
---source suite/rocksdb/include/select_from_rocksdb_locks.inc
+--source suite/rocksdb/include/select_from_is_rowlocks.inc
 
 rollback;
 --echo # Now, TRX2_ID should be gone:
---source suite/rocksdb/include/select_from_rocksdb_locks.inc
+--source suite/rocksdb/include/select_from_is_rowlocks.inc
 
 connection default;
 
 --echo # Get a read lock on pk=3 (where we have a write lock).
 --echo #  The result should be that we will still have a write lock
 select * from t1 where pk=3 for update;
---source suite/rocksdb/include/select_from_rocksdb_locks.inc
+--source suite/rocksdb/include/select_from_is_rowlocks.inc
 
 --echo # Get a write lock on pk=5 (where we have a read lock).
 --echo #  The result should be that we will have a write lock.
 select * from t1 where pk=5 for update;
---source suite/rocksdb/include/select_from_rocksdb_locks.inc
+--source suite/rocksdb/include/select_from_is_rowlocks.inc
 
 connection default;
 rollback;
@@ -110,7 +110,7 @@ select * from t1 where a between 2 and 5 lock in share mode;
 select * from t1 where a between 2 and 5 lock in share mode;
 let $TRX1_ID=`select transaction_id from information_schema.rocksdb_trx where thread_id=connection_id()`;
 
---source suite/rocksdb/include/select_from_rocksdb_locks.inc
+--source suite/rocksdb/include/select_from_is_rowlocks.inc
 
 rollback;
 
@@ -167,7 +167,7 @@ insert into t1 select 2000+A.a, 0 from t0 A;
 
 let $order_by_rowkey=1;
 #select * from information_schema.rocksdb_locks;
---source suite/rocksdb/include/select_from_rocksdb_locks.inc
+--source suite/rocksdb/include/select_from_is_rowlocks.inc
 
 connection default;
 show status like 'rocksdb_locktree_current_lock_memory';
@@ -187,7 +187,7 @@ connection con1;
 insert into t1 select 3000+A.a, 0 from t0 A;
 
 #select * from information_schema.rocksdb_locks;
---source suite/rocksdb/include/select_from_rocksdb_locks.inc
+--source suite/rocksdb/include/select_from_is_rowlocks.inc
 
 connection con1;
 rollback;

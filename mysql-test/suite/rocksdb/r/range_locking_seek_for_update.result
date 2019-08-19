@@ -44,8 +44,8 @@ pk	a
 502	502
 # select * from information_schema.rocksdb_locks; # With replacements by select_from_is_rowlocks.inc
 COLUMN_FAMILY_ID	TRANSACTION_ID	KEY	mode
-$cf_id	$trx_id	0000${indexnr}800001f4 - 0000${indexnr}800001f6	X
 $cf_id	$trx_id	0000${indexnr}8000000b	X
+$cf_id	$trx_id	0000${indexnr}800001f4 - 0000${indexnr}800001f6	X
 $cf_id	6	0000${indexnr}8000000a	X
 rollback;
 begin;
@@ -63,9 +63,9 @@ pk	a
 2	2
 # select * from information_schema.rocksdb_locks; # With replacements by select_from_is_rowlocks.inc
 COLUMN_FAMILY_ID	TRANSACTION_ID	KEY	mode
+$cf_id	$trx_id	0000${indexnr} - 0000${indexnr}80000002	X
 $cf_id	$trx_id	0000${indexnr}8000000b	X
 $cf_id	6	0000${indexnr}8000000a	X
-$cf_id	$trx_id	0000${indexnr} - 0000${indexnr}80000002	X
 rollback;
 connection con1;
 rollback;
