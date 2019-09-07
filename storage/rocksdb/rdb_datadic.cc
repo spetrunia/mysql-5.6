@@ -3560,6 +3560,25 @@ bool Rdb_tbl_def::put_dict(Rdb_dict_manager *const dict,
   const rocksdb::Slice svalue(indexes.c_ptr(), indexes.length());
 
   dict->put_key(batch, key, svalue);
+
+  // Now, save the creation timestamp
+  bool simulate_old_version = false;
+  DBUG_EXECUTE_IF("myrocks_produce_ddl_entry_v1",
+                  simulate_old_version = true; );
+  if (!simulate_old_version) {
+    Rdb_buf_writer<FN_LEN * 2 + Rdb_key_def::INDEX_NUMBER_SIZE> ts_key;
+    ts_key.write_index(Rdb_key_def::TABLE_CREATE_TIMESTAMP);
+    ts_key.write(m_dbname_tablename.c_str(), m_dbname_tablename.size());
+
+    const int ts_and_vers_size = Rdb_key_def::VERSION_SIZE +
+                                 Rdb_key_def::TABLE_CREATE_TIMESTAMP_SIZE;
+    Rdb_buf_writer<ts_and_vers_size> ts_val;
+    ts_val.write_uint16(Rdb_key_def::TABLE_CREATE_TIMESTAMP_VERSION);
+    ts_val.write_uint64(create_time);
+
+    dict->put_key(batch, ts_key.to_slice(), ts_val.to_slice());
+  }
+
   return false;
 }
 
@@ -3974,6 +3993,50 @@ bool Rdb_ddl_manager::validate_schemas(void) {
   return !has_errors;
 }
 
+
+void Rdb_ddl_manager::load_create_timestamp(Rdb_tbl_def *tdef) {
+  Rdb_buf_writer<FN_LEN * 2 + Rdb_key_def::INDEX_NUMBER_SIZE> lookup_key;
+
+  lookup_key.write_index(Rdb_key_def::TABLE_CREATE_TIMESTAMP);
+  const std::string &dbname_tablename = tdef->full_tablename();
+  lookup_key.write(dbname_tablename.c_str(), dbname_tablename.size());
+
+  tdef->set_create_time(0); // The default is SQL NULL.
+
+  std::string ts_value;
+  auto s = m_dict->get_value(lookup_key.to_slice(), &ts_value);
+  // Create timestamp may or may not be present. If it is not present, it's not
+  // an error.
+  if (s.ok()) {
+    if (ts_value.size() < Rdb_key_def::VERSION_SIZE) {
+      // NO_LINT_DEBUG
+      sql_print_warning(
+          "RocksDB: Invalid TABLE_CREATE_TIMESTAMP record for table %s",
+          dbname_tablename.c_str());
+    }
+
+    const uchar *ptr = reinterpret_cast<const uchar *>(ts_value.data());
+    const int version = rdb_netbuf_read_uint16(&ptr);
+
+    if (version != Rdb_key_def::TABLE_CREATE_TIMESTAMP_VERSION) {
+      // NO_LINT_DEBUG
+      sql_print_warning(
+          "RocksDB: TABLE_CREATE_TIMESTAMP Version was not expected."
+          "Expected: %d, Actual: %d",
+          Rdb_key_def::TABLE_CREATE_TIMESTAMP_VERSION, version);
+      return;
+    }
+    if (ts_value.size() != 2 + Rdb_key_def::TABLE_CREATE_TIMESTAMP_SIZE) {
+      // NO_LINT_DEBUG
+      sql_print_warning(
+          "RocksDB: Unexpected size of TABLE_CREATE_TIMESTAMP record: %ld",
+          ts_value.size());
+      return;
+    }
+    tdef->set_create_time(rdb_netbuf_read_uint64(&ptr));
+  }
+}
+
 bool Rdb_ddl_manager::init(Rdb_dict_manager *const dict_arg,
                            Rdb_cf_manager *const cf_manager,
                            const uint32_t validate_tables) {
@@ -4109,6 +4172,7 @@ bool Rdb_ddl_manager::init(Rdb_dict_manager *const dict_arg,
         tdef->m_key_count > 0 ? tdef->m_key_descr_arr[0]->m_stats.m_rows : 0, 0,
         0);
 
+    load_create_timestamp(tdef);
     put(tdef);
     i++;
   }
@@ -4436,6 +4500,12 @@ void Rdb_ddl_manager::remove(Rdb_tbl_def *const tbl,
 
   m_dict->delete_key(batch, key_writer.to_slice());
 
+  // Also delete the table creation timestamp record
+  Rdb_buf_writer<FN_LEN * 2 + Rdb_key_def::INDEX_NUMBER_SIZE> ts_key;
+  ts_key.write_index(Rdb_key_def::TABLE_CREATE_TIMESTAMP);
+  ts_key.write(dbname_tablename.c_str(), dbname_tablename.size());
+  m_dict->delete_key(batch, ts_key.to_slice());
+
   const auto it = m_ddl_map.find(dbname_tablename);
   if (it != m_ddl_map.end()) {
     // Free Rdb_tbl_def
@@ -4471,6 +4541,7 @@ bool Rdb_ddl_manager::rename(const std::string &from, const std::string &to,
       rec->m_hidden_pk_val.load(std::memory_order_relaxed);
 
   new_rec->m_tbl_stats = rec->m_tbl_stats;
+  new_rec->set_create_time(rec->get_create_time());
 
   // so that it's not free'd when deleting the old rec
   rec->m_key_descr_arr = nullptr;

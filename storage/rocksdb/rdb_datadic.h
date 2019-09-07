@@ -465,6 +465,7 @@ class Rdb_key_def {
     CF_NUMBER_SIZE = 4,
     CF_FLAG_SIZE = 4,
     PACKED_SIZE = 4,  // one int
+    TABLE_CREATE_TIMESTAMP_SIZE = 8,
   };
 
   // bit flags for combining bools when writing to disk
@@ -500,6 +501,7 @@ class Rdb_key_def {
     DDL_CREATE_INDEX_ONGOING = 8,
     AUTO_INC = 9,
     DROPPED_CF = 10,
+    TABLE_CREATE_TIMESTAMP = 11,
     END_DICT_INDEX_ID = 255
   };
 
@@ -514,6 +516,7 @@ class Rdb_key_def {
     DDL_CREATE_INDEX_ONGOING_VERSION = 1,
     AUTO_INCREMENT_VERSION = 1,
     DROPPED_CF_VERSION = 1,
+    TABLE_CREATE_TIMESTAMP_VERSION = 1,
     // Version for index stats is stored in IndexStats struct
   };
 
@@ -1116,6 +1119,12 @@ class Rdb_tbl_def {
 
   ~Rdb_tbl_def();
 
+  // time values are shown in SHOW TABLE STATUS
+  void set_create_time(time_t val) { create_time = val; }
+  time_t get_create_time() { return create_time; }
+
+  time_t update_time = 0; // in-memory only value, maintained right here
+
   void check_and_set_read_free_rpl_table();
 
   /* Number of indexes */
@@ -1161,6 +1170,9 @@ class Rdb_tbl_def {
   const std::string &base_tablename() const { return m_tablename; }
   const std::string &base_partition() const { return m_partition; }
   GL_INDEX_ID get_autoincr_gl_index_id();
+
+ private:
+  time_t create_time = 0;
 };
 
 /*
@@ -1248,6 +1260,7 @@ class Rdb_ddl_manager {
   void persist_stats(const bool sync = false);
 
   void set_table_stats(const std::string &tbl_name);
+  void load_create_timestamp(Rdb_tbl_def *tdef);
 
   /* Modify the mapping and write it to on-disk storage */
   int put_and_write(Rdb_tbl_def *const key_descr,
@@ -1385,6 +1398,11 @@ class Rdb_binlog_manager {
   10. dropped cfs
   key: Rdb_key_def::DROPPED_CF(0xa) + cf_id
   value: version
+
+  11.Table Name => crete_timestamp.
+  key: Rdb_key_def::TABLE_CREATE_TIMESTAMP(0xB) + dbname.tablename
+  value: version, create_timestamp.
+  create_timestamp is 8 bytes.
 
   Data dictionary operations are atomic inside RocksDB. For example,
   when creating a table with two indexes, it is necessary to call Put
