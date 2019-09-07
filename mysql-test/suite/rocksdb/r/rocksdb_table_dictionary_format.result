@@ -1,0 +1,37 @@
+select @@rocksdb_table_dictionary_format;
+@@rocksdb_table_dictionary_format
+2
+#
+# Server restarted
+#
+select @@rocksdb_table_dictionary_format;
+@@rocksdb_table_dictionary_format
+1
+create table t1 (a int) engine=rocksdb;
+insert into t1 values (1);
+# Create_time will be NULL as the table doesn't support it
+# Update_time will be non-null
+select create_time, update_time is not null
+from information_schema.tables
+where table_schema=database() and table_name='t1';
+create_time	update_time is not null
+NULL	1
+#
+# Server restarted
+#
+select @@rocksdb_table_dictionary_format;
+@@rocksdb_table_dictionary_format
+2
+select create_time, update_time is not null
+from information_schema.tables
+where table_schema=database() and table_name='t1';
+create_time	update_time is not null
+NULL	0
+set global rocksdb_compact_cf='default';
+select concat('00', '00', '00', '01', hex('test.t1'));
+concat('00', '00', '00', '01', hex('test.t1'))
+00000001746573742E7431
+Found the datadic entry
+Value has format version 1, followed by 8 bytes describing one index
+Done
+drop table t1;

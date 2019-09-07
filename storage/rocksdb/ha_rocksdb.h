@@ -82,6 +82,7 @@ extern PSI_rwlock_key key_rwlock_read_free_rpl_tables;
 #endif
 extern Regex_list_handler rdb_read_free_regex_handler;
 
+extern uint rocksdb_table_dictionary_format;
 /**
   @brief
   Rdb_table_handler is a reference-counted structure storing information for

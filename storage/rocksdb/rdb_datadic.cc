@@ -3514,8 +3514,21 @@ bool Rdb_tbl_def::put_dict(Rdb_dict_manager *const dict,
                            const rocksdb::Slice &key) {
   StringBuffer<8 * Rdb_key_def::PACKED_SIZE> indexes;
   indexes.alloc(Rdb_key_def::VERSION_SIZE +
+                Rdb_key_def::TABLE_CREATE_TIMESTAMP_SIZE +
                 m_key_count * Rdb_key_def::PACKED_SIZE * 2);
-  rdb_netstr_append_uint16(&indexes, Rdb_key_def::DDL_ENTRY_INDEX_VERSION);
+
+  if (rocksdb_table_dictionary_format <
+    ROCKSDB_DATADIC_FORMAT_CREATE_TIMESTAMP) {
+    rdb_netstr_append_uint16(&indexes, Rdb_key_def::DDL_ENTRY_INDEX_VERSION_1);
+    // We are using old data format, which means we cannot save Create_time
+    // Set it to be shown as unknown right away, so that the behavior before
+    // server restart and after is the same.
+    set_create_time(0);
+  }
+  else {
+    rdb_netstr_append_uint16(&indexes, Rdb_key_def::DDL_ENTRY_INDEX_VERSION_2);
+    rdb_netstr_append_uint64(&indexes, create_time);
+  }
 
   for (uint i = 0; i < m_key_count; i++) {
     const Rdb_key_def &kd = *m_key_descr_arr[i];
@@ -4015,8 +4028,42 @@ bool Rdb_ddl_manager::init(Rdb_dict_manager *const dict_arg,
     Rdb_tbl_def *const tdef =
         new Rdb_tbl_def(key, Rdb_key_def::INDEX_NUMBER_SIZE);
 
+    if (val.size() < Rdb_key_def::VERSION_SIZE) {
+      // NO_LINT_DEBUG
+      sql_print_error("RocksDB: Table_store: invalid keylist for table %s",
+                      tdef->full_tablename().c_str());
+      return true;
+    }
+
+    ptr = reinterpret_cast<const uchar *>(val.data());
+    const int version = rdb_netbuf_read_uint16(&ptr);
+
+    if (version != Rdb_key_def::DDL_ENTRY_INDEX_VERSION_1 &&
+        version != Rdb_key_def::DDL_ENTRY_INDEX_VERSION_2) {
+      // NO_LINT_DEBUG
+      sql_print_error(
+          "RocksDB: DDL ENTRY Version was not expected."
+          "Expected: %d..%d, Actual: %d",
+          Rdb_key_def::DDL_ENTRY_INDEX_VERSION_1,
+          Rdb_key_def::DDL_ENTRY_INDEX_VERSION_2, version);
+      return true;
+    }
+    int real_val_size = val.size() - Rdb_key_def::VERSION_SIZE;
+
+    if (version == Rdb_key_def::DDL_ENTRY_INDEX_VERSION_2) {
+      if (real_val_size < Rdb_key_def::TABLE_CREATE_TIMESTAMP_SIZE) {
+        // NO_LINT_DEBUG
+        sql_print_error( "RocksDB: DDL ENTRY V2 doesn't have timestamp");
+        delete tdef;
+        return true;
+      }
+      tdef->set_create_time(rdb_netbuf_read_uint64(&ptr));
+      real_val_size -= Rdb_key_def::TABLE_CREATE_TIMESTAMP_SIZE;
+    }
+    else
+      tdef->set_create_time(0); // shown as SQL NULL.
+
     // Now, read the DDLs.
-    const int real_val_size = val.size() - Rdb_key_def::VERSION_SIZE;
     if (real_val_size % Rdb_key_def::PACKED_SIZE * 2 > 0) {
       // NO_LINT_DEBUG
       sql_print_error("RocksDB: Table_store: invalid keylist for table %s",
@@ -4026,16 +4073,7 @@ bool Rdb_ddl_manager::init(Rdb_dict_manager *const dict_arg,
     tdef->m_key_count = real_val_size / (Rdb_key_def::PACKED_SIZE * 2);
     tdef->m_key_descr_arr = new std::shared_ptr<Rdb_key_def>[tdef->m_key_count];
 
-    ptr = reinterpret_cast<const uchar *>(val.data());
-    const int version = rdb_netbuf_read_uint16(&ptr);
-    if (version != Rdb_key_def::DDL_ENTRY_INDEX_VERSION) {
-      // NO_LINT_DEBUG
-      sql_print_error(
-          "RocksDB: DDL ENTRY Version was not expected."
-          "Expected: %d, Actual: %d",
-          Rdb_key_def::DDL_ENTRY_INDEX_VERSION, version);
-      return true;
-    }
+
     ptr_end = ptr + real_val_size;
     for (uint keyno = 0; ptr < ptr_end; keyno++) {
       GL_INDEX_ID gl_index_id;
@@ -4471,6 +4509,7 @@ bool Rdb_ddl_manager::rename(const std::string &from, const std::string &to,
       rec->m_hidden_pk_val.load(std::memory_order_relaxed);
 
   new_rec->m_tbl_stats = rec->m_tbl_stats;
+  new_rec->set_create_time(rec->get_create_time());
 
   // so that it's not free'd when deleting the old rec
   rec->m_key_descr_arr = nullptr;

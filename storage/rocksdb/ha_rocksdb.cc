@@ -122,6 +122,8 @@ const std::string PER_INDEX_CF_NAME("$per_index_cf");
 
 static std::vector<std::string> rdb_tables_to_recalc;
 
+uint rocksdb_table_dictionary_format;
+
 class Rdb_explicit_snapshot : public explicit_snapshot {
  public:
   static std::shared_ptr<Rdb_explicit_snapshot> create(
@@ -2136,6 +2138,17 @@ static MYSQL_SYSVAR_ULONGLONG(
     "MultiGet",
     nullptr, nullptr, SIZE_T_MAX, /* min */ 0, /* max */ SIZE_T_MAX, 0);
 
+static MYSQL_SYSVAR_UINT(table_dictionary_format,
+                         rocksdb_table_dictionary_format,
+                         PLUGIN_VAR_RQCMDARG | PLUGIN_VAR_READONLY,
+                         "Max Table Dictionary format version that the server "
+                         "may create (use lower values for backward "
+                         " compatibility, higher values for new features)",
+                         nullptr, nullptr,
+                         ROCKSDB_DATADIC_FORMAT_DEFAULT,
+                         ROCKSDB_DATADIC_FORMAT_INITIAL,
+                         ROCKSDB_DATADIC_FORMAT_MAX, 0);
+
 static const int ROCKSDB_ASSUMED_KEY_VALUE_DISK_SIZE = 100;
 
 static struct st_mysql_sys_var *rocksdb_system_variables[] = {
@@ -2309,6 +2322,8 @@ static struct st_mysql_sys_var *rocksdb_system_variables[] = {
     MYSQL_SYSVAR(select_bypass_log_rejected),
     MYSQL_SYSVAR(select_bypass_debug_row_delay),
     MYSQL_SYSVAR(select_bypass_multiget_min),
+
+    MYSQL_SYSVAR(table_dictionary_format),
     nullptr};
 
 static rocksdb::WriteOptions rdb_get_rocksdb_write_options(
@@ -2455,6 +2470,8 @@ class Rdb_transaction {
 
   bool m_is_delayed_snapshot = false;
   bool m_is_two_phase = false;
+
+  std::unordered_set<Rdb_tbl_def*> modified_tables;
 
  private:
   /*
@@ -3139,6 +3156,25 @@ class Rdb_transaction {
   virtual void start_tx() = 0;
   virtual void start_stmt() = 0;
 
+ protected:
+  // Non-virtual functions with actions to be done on transaction start and
+  // commit.
+  void on_commit() {
+    time_t tm;
+    tm = time(nullptr);
+    for (auto &it : modified_tables) {
+      it->update_time = tm;
+    }
+    modified_tables.clear();
+  }
+  void on_rollback() {
+    modified_tables.clear();
+  }
+ public:
+  void log_table_write_op(Rdb_tbl_def *tbl) {
+    modified_tables.insert(tbl);
+  }
+
   void set_initial_savepoint() {
     /*
       Set the initial savepoint. If the first statement in the transaction
@@ -3322,7 +3358,9 @@ class Rdb_transaction_impl : public Rdb_transaction {
       goto error;
     }
 
+    on_commit();
   error:
+    on_rollback();
     /* Save the transaction object to be reused */
     release_tx();
 
@@ -3338,6 +3376,7 @@ class Rdb_transaction_impl : public Rdb_transaction {
 
  public:
   void rollback() override {
+    on_rollback();
     m_write_count = 0;
     m_insert_count = 0;
     m_update_count = 0;
@@ -3659,7 +3698,9 @@ class Rdb_writebatch_impl : public Rdb_transaction {
       res = true;
       goto error;
     }
+    on_commit();
   error:
+    on_rollback();
     reset();
 
     m_write_count = 0;
@@ -3691,6 +3732,7 @@ class Rdb_writebatch_impl : public Rdb_transaction {
   }
 
   void rollback() override {
+    on_rollback();
     m_write_count = 0;
     m_insert_count = 0;
     m_update_count = 0;
@@ -7549,6 +7591,7 @@ int ha_rocksdb::create_table(const std::string &table_name,
 
   /* Create table/key descriptions and put them into the data dictionary */
   m_tbl_def = new Rdb_tbl_def(table_name);
+  m_tbl_def->set_create_time(time(nullptr));
 
   uint n_keys = table_arg->s->keys;
 
@@ -10177,6 +10220,8 @@ int ha_rocksdb::update_write_row(const uchar *const old_data,
     row_info.tx->incr_insert_count();
   }
 
+  row_info.tx->log_table_write_op(m_tbl_def);
+
   if (do_bulk_commit(row_info.tx)) {
     DBUG_RETURN(HA_ERR_ROCKSDB_BULK_LOAD);
   }
@@ -10648,6 +10693,7 @@ int ha_rocksdb::delete_row(const uchar *const buf) {
   }
 
   tx->incr_delete_count();
+  tx->log_table_write_op(m_tbl_def);
 
   if (do_bulk_commit(tx)) {
     DBUG_RETURN(HA_ERR_ROCKSDB_BULK_LOAD);
@@ -10802,6 +10848,12 @@ int ha_rocksdb::info(uint flag) {
         k->rec_per_key[j] = x;
       }
     }
+
+    stats.create_time = m_tbl_def->get_create_time();
+  }
+
+  if (flag & HA_STATUS_TIME) {
+    stats.update_time = m_tbl_def->update_time;
   }
 
   if (flag & HA_STATUS_ERRKEY) {
@@ -12603,6 +12655,7 @@ bool ha_rocksdb::prepare_inplace_alter_table(
         m_tbl_def->m_auto_incr_val.load(std::memory_order_relaxed);
     new_tdef->m_hidden_pk_val =
         m_tbl_def->m_hidden_pk_val.load(std::memory_order_relaxed);
+    new_tdef->set_create_time(m_tbl_def->get_create_time());
 
     if (create_key_defs(altered_table, new_tdef, table, m_tbl_def)) {
       /* Delete the new key descriptors */

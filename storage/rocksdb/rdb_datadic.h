@@ -203,6 +203,22 @@ enum {
   UNPACK_FAILURE = 1,
 };
 
+
+/*
+  Global user-visible data dictionary format version.
+  The server will read the data of any version, but will not write data
+  structures that were introduced after the version in
+  rocksdb_table_dictionary_format.
+  This way, one can keep the on-disk data backward-compatible.
+*/
+const uint ROCKSDB_DATADIC_FORMAT_INITIAL = 1;
+const uint ROCKSDB_DATADIC_FORMAT_CREATE_TIMESTAMP = 2;
+
+// Maximum possible value:
+const uint ROCKSDB_DATADIC_FORMAT_MAX = 2;
+const uint ROCKSDB_DATADIC_FORMAT_DEFAULT = ROCKSDB_DATADIC_FORMAT_MAX;
+
+
 /*
   An object of this class represents information about an index in an SQL
   table. It provides services to encode and decode index tuples.
@@ -465,6 +481,7 @@ class Rdb_key_def {
     CF_NUMBER_SIZE = 4,
     CF_FLAG_SIZE = 4,
     PACKED_SIZE = 4,  // one int
+    TABLE_CREATE_TIMESTAMP_SIZE = 8,
   };
 
   // bit flags for combining bools when writing to disk
@@ -506,7 +523,10 @@ class Rdb_key_def {
   // Data dictionary schema version. Introduce newer versions
   // if changing schema layout
   enum {
-    DDL_ENTRY_INDEX_VERSION = 1,
+    DDL_ENTRY_INDEX_VERSION_1 = 1,
+    // this includes a 64-bit table_creation_time at the end.
+    // Allowed since ROCKSDB_DATADIC_FORMAT_CREATE_TIMESTAMP.
+    DDL_ENTRY_INDEX_VERSION_2 = 2,
     CF_DEFINITION_VERSION = 1,
     BINLOG_INFO_INDEX_NUMBER_VERSION = 1,
     DDL_DROP_INDEX_ONGOING_VERSION = 1,
@@ -1116,6 +1136,12 @@ class Rdb_tbl_def {
 
   ~Rdb_tbl_def();
 
+  // time values are shown in SHOW TABLE STATUS
+  void set_create_time(time_t val) { create_time = val; }
+  time_t get_create_time() { return create_time; }
+
+  time_t update_time = 0; // in-memory only value, maintained right here
+
   void check_and_set_read_free_rpl_table();
 
   /* Number of indexes */
@@ -1161,6 +1187,9 @@ class Rdb_tbl_def {
   const std::string &base_tablename() const { return m_tablename; }
   const std::string &base_partition() const { return m_partition; }
   GL_INDEX_ID get_autoincr_gl_index_id();
+
+ private:
+  time_t create_time = 0;
 };
 
 /*
@@ -1341,8 +1370,11 @@ class Rdb_binlog_manager {
 
   1. Table Name => internal index id mappings
   key: Rdb_key_def::DDL_ENTRY_INDEX_START_NUMBER(0x1) + dbname.tablename
-  value: version, {cf_id, index_id}*n_indexes_of_the_table
+  value: DDL_ENTRY_INDEX_VERSION_1, {cf_id, index_id}*n_indexes_of_the_table
+  or value: DDL_ENTRY_INDEX_VERSION_2, create_timestamp, {cf_id, index_id}*
+  n_indexes_of_the_table
   version is 2 bytes. cf_id and index_id are 4 bytes.
+  create_timestamp is 8 bytes.
 
   2. internal cf_id, index id => index information
   key: Rdb_key_def::INDEX_INFO(0x2) + cf_id + index_id

@@ -1,0 +1,67 @@
+--source include/have_rocksdb.inc
+
+select @@rocksdb_table_dictionary_format;
+
+#
+# Check the upgrade from Rdb_key_def::DDL_ENTRY_INDEX_VERSION_1 to _2
+#
+
+--let $_mysqld_option=--rocksdb_table_dictionary_format=1
+--source include/restart_mysqld_with_option.inc
+
+--echo #
+--echo # Server restarted
+--echo #
+select @@rocksdb_table_dictionary_format;
+
+create table t1 (a int) engine=rocksdb;
+insert into t1 values (1);
+
+--echo # Create_time will be NULL as the table doesn't support it
+--echo # Update_time will be non-null
+select create_time, update_time is not null
+from information_schema.tables
+where table_schema=database() and table_name='t1';
+
+--let $_mysqld_option=--rocksdb_table_dictionary_format=2
+--source include/restart_mysqld_with_option.inc
+--echo #
+--echo # Server restarted
+--echo #
+select @@rocksdb_table_dictionary_format;
+
+select create_time, update_time is not null
+from information_schema.tables
+where table_schema=database() and table_name='t1';
+set global rocksdb_compact_cf='default';
+# use: $MYSQLTEST_VARDIR $MYSQL_SST_DUMP
+let MYSQL_DATADIR = `select @@datadir`;
+let MYSQL_SST_DUMP = $MYSQL_SST_DUMP;
+
+select concat('00', '00', '00', '01', hex('test.t1'));
+
+#  We are looking to find a record like this:
+# '00000001746573742E7431' seq:0, type:1 => 00010000000000000104
+#  that is:
+# '00000001:746573742E7431' seq:0, type:1 => 0001: 0000000000000104
+#   the key is: DDL_ENTRY_INDEX_START_NUMBER, "test.t1"
+#   the value is: DDL_ENTRY_INDEX_VERSION_1, {cf_id, index_id}
+perl;
+  my $datadir = $ENV{'MYSQL_DATADIR'};
+  my $sst_dump = $ENV{'MYSQL_SST_DUMP'};
+  open(IN, "$sst_dump --command=scan --output_hex --file=$datadir/.rocksdb |");
+  while(<IN>) {
+    if ($_ =~ /^\'00000001746573742E7431\'/) {
+      print "Found the datadic entry\n";
+      if ($_ =~ / 0001[0-9]{16}$/) {
+        print "Value has format version 1, followed by 8 bytes describing one index\n"
+      } else {
+        print "Unexpected value. $_\n";
+      }
+    }
+  }
+  print "Done\n";
+  close(IN);
+EOF
+drop table t1;
+
