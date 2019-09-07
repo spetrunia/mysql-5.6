@@ -1,0 +1,13 @@
+set session debug='+d,myrocks_produce_ddl_entry_v1';
+create table t1 (a int) engine=rocksdb;
+insert into t1 values (123);
+set session debug='-d,myrocks_produce_ddl_entry_v1';
+select * from t1;
+a
+123
+select create_time, update_time
+from information_schema.tables
+where table_schema=database() and table_name='t1';
+create_time	update_time
+NULL	NULL
+drop table t1;
