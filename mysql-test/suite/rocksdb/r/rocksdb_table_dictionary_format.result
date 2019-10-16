@@ -1,6 +1,6 @@
 select @@rocksdb_table_dictionary_format;
 @@rocksdb_table_dictionary_format
-2
+1
 #
 # Server restarted
 #

@@ -1,5 +1,5 @@
 --source include/have_rocksdb.inc
-
+--source include/have_partition.inc
 # 
 # SHOW TABLE STATUS statement
 #
@@ -62,9 +62,15 @@ CREATE TABLE `t1_new..............................................end`(a int) en
 INSERT INTO `t1_new..............................................end` VALUES (1);
 --query_vertical SELECT TABLE_SCHEMA, TABLE_NAME FROM information_schema.table_statistics WHERE TABLE_NAME = 't1_new..............................................end'
 DROP DATABASE `db_new..............................................end`;
+
 --echo #
 --echo # MDEV-17171: Bug: RocksDB Tables do not have "Creation Date"
 --echo #
+
+--let $_mysqld_option=--rocksdb_table_dictionary_format=2
+--source include/restart_mysqld_with_option.inc
+
+select @@rocksdb_table_dictionary_format;
 use test;
 create table t1 (a int) engine=rocksdb;
 
@@ -130,7 +136,8 @@ select create_time
 from information_schema.tables
 where table_schema=database() and table_name='t1';
 
---source include/restart_mysqld.inc
+# We stiil have $_mysqld_option=--rocksdb_table_dictionary_format=2
+--source include/restart_mysqld_with_option.inc
 
 select
   create_time=(select create_time from t2)  /* should change */,
@@ -139,3 +146,17 @@ from information_schema.tables
 where table_schema=database() and table_name='t1';
 
 drop table t1, t2;
+
+--echo #
+--echo # Check how it works for partitioned tables
+--echo #
+create table t1 (pk int primary key) partition by hash(pk) partitions 2;
+insert into t1 values (1);
+
+select create_time IS NOT NULL , update_time IS NOT NULL
+from information_schema.tables 
+where table_schema=database() and table_name='t1';
+drop table t1;
+
+--let $_mysqld_option=
+--source include/restart_mysqld.inc

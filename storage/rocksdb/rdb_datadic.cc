@@ -3517,17 +3517,23 @@ bool Rdb_tbl_def::put_dict(Rdb_dict_manager *const dict,
                 Rdb_key_def::TABLE_CREATE_TIMESTAMP_SIZE +
                 m_key_count * Rdb_key_def::PACKED_SIZE * 2);
 
-  if (rocksdb_table_dictionary_format <
-    ROCKSDB_DATADIC_FORMAT_CREATE_TIMESTAMP) {
-    rdb_netstr_append_uint16(&indexes, Rdb_key_def::DDL_ENTRY_INDEX_VERSION_1);
-    // We are using old data format, which means we cannot save Create_time
-    // Set it to be shown as unknown right away, so that the behavior before
-    // server restart and after is the same.
-    set_create_time(0);
-  }
-  else {
-    rdb_netstr_append_uint16(&indexes, Rdb_key_def::DDL_ENTRY_INDEX_VERSION_2);
-    rdb_netstr_append_uint64(&indexes, create_time);
+  switch (rocksdb_table_dictionary_format) {
+    case ROCKSDB_DATADIC_FORMAT_INITIAL:
+      rdb_netstr_append_uint16(&indexes, Rdb_key_def::DDL_ENTRY_INDEX_VERSION_1);
+      // We are using old data format, which means we cannot save Create_time
+      // Set it to be shown as unknown right away, so that the behavior before
+      // server restart and after is the same.
+      set_create_time(0);
+      break;
+    case ROCKSDB_DATADIC_FORMAT_CREATE_TIMESTAMP:
+      rdb_netstr_append_uint16(&indexes, Rdb_key_def::DDL_ENTRY_INDEX_VERSION_2);
+      rdb_netstr_append_uint64(&indexes, create_time);
+      break;
+    default:
+      DBUG_ASSERT(0);
+      rdb_netstr_append_uint16(&indexes, Rdb_key_def::DDL_ENTRY_INDEX_VERSION_1);
+      set_create_time(0);
+      break;
   }
 
   for (uint i = 0; i < m_key_count; i++) {
@@ -4068,6 +4074,7 @@ bool Rdb_ddl_manager::init(Rdb_dict_manager *const dict_arg,
       // NO_LINT_DEBUG
       sql_print_error("RocksDB: Table_store: invalid keylist for table %s",
                       tdef->full_tablename().c_str());
+      delete tdef;
       return true;
     }
     tdef->m_key_count = real_val_size / (Rdb_key_def::PACKED_SIZE * 2);
@@ -4087,6 +4094,7 @@ bool Rdb_ddl_manager::init(Rdb_dict_manager *const dict_arg,
             "for Index Number (%u,%u), table %s",
             gl_index_id.cf_id, gl_index_id.index_id,
             tdef->full_tablename().c_str());
+        delete tdef;
         return true;
       }
       if (max_index_id_in_dict < gl_index_id.index_id) {
@@ -4096,6 +4104,7 @@ bool Rdb_ddl_manager::init(Rdb_dict_manager *const dict_arg,
             "but also found larger index id %u from dictionary. "
             "This should never happen and possibly a bug.",
             max_index_id_in_dict, gl_index_id.index_id);
+        delete tdef;
         return true;
       }
       if (!m_dict->get_cf_flags(gl_index_id.cf_id, &flags)) {
@@ -4104,6 +4113,7 @@ bool Rdb_ddl_manager::init(Rdb_dict_manager *const dict_arg,
             "RocksDB: Could not get Column Family Flags "
             "for CF Number %d, table %s",
             gl_index_id.cf_id, tdef->full_tablename().c_str());
+        delete tdef;
         return true;
       }
 

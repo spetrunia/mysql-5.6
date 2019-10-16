@@ -216,7 +216,7 @@ const uint ROCKSDB_DATADIC_FORMAT_CREATE_TIMESTAMP = 2;
 
 // Maximum possible value:
 const uint ROCKSDB_DATADIC_FORMAT_MAX = 2;
-const uint ROCKSDB_DATADIC_FORMAT_DEFAULT = ROCKSDB_DATADIC_FORMAT_MAX;
+const uint ROCKSDB_DATADIC_FORMAT_DEFAULT = ROCKSDB_DATADIC_FORMAT_INITIAL;
 
 
 /*
@@ -523,9 +523,11 @@ class Rdb_key_def {
   // Data dictionary schema version. Introduce newer versions
   // if changing schema layout
   enum {
+    // Used when rocksdb_table_dictionary_format=ROCKSDB_DATADIC_FORMAT_INITIAL
     DDL_ENTRY_INDEX_VERSION_1 = 1,
-    // this includes a 64-bit table_creation_time at the end.
-    // Allowed since ROCKSDB_DATADIC_FORMAT_CREATE_TIMESTAMP.
+
+    // Used when rocksdb_table_dictionary_format=
+    //   ROCKSDB_DATADIC_FORMAT_CREATE_TIMESTAMP
     DDL_ENTRY_INDEX_VERSION_2 = 2,
     CF_DEFINITION_VERSION = 1,
     BINLOG_INFO_INDEX_NUMBER_VERSION = 1,
@@ -1370,9 +1372,11 @@ class Rdb_binlog_manager {
 
   1. Table Name => internal index id mappings
   key: Rdb_key_def::DDL_ENTRY_INDEX_START_NUMBER(0x1) + dbname.tablename
-  value: DDL_ENTRY_INDEX_VERSION_1, {cf_id, index_id}*n_indexes_of_the_table
-  or value: DDL_ENTRY_INDEX_VERSION_2, create_timestamp, {cf_id, index_id}*
-  n_indexes_of_the_table
+  value has two versions:
+  version=DDL_ENTRY_INDEX_VERSION_1, {cf_id, index_id}*n_indexes_of_the_table.
+  version=DDL_ENTRY_INDEX_VERSION_2, create_timestamp, {cf_id, index_id}*
+  n_indexes_of_the_table.
+
   version is 2 bytes. cf_id and index_id are 4 bytes.
   create_timestamp is 8 bytes.
 
