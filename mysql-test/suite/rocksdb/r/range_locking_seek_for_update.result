@@ -29,7 +29,6 @@ pk	a
 # select * from information_schema.rocksdb_locks; # With replacements by select_from_is_rowlocks.inc
 COLUMN_FAMILY_ID	TRANSACTION_ID	KEY	mode
 $cf_id	$trx_id	0000${indexnr}8000000b	X
-$cf_id	6	0000${indexnr}8000000a	X
 #
 #  SeekForUpdate Test #1: A query with type=range (without upper bound) and LIMIT 
 #
@@ -46,7 +45,6 @@ pk	a
 COLUMN_FAMILY_ID	TRANSACTION_ID	KEY	mode
 $cf_id	$trx_id	0000${indexnr}8000000b	X
 $cf_id	$trx_id	0000${indexnr}800001f4 - 0000${indexnr}800001f6	X
-$cf_id	6	0000${indexnr}8000000a	X
 rollback;
 begin;
 select * from t1 where pk=11 for update;
@@ -65,7 +63,6 @@ pk	a
 COLUMN_FAMILY_ID	TRANSACTION_ID	KEY	mode
 $cf_id	$trx_id	0000${indexnr} - 0000${indexnr}80000002	X
 $cf_id	$trx_id	0000${indexnr}8000000b	X
-$cf_id	6	0000${indexnr}8000000a	X
 rollback;
 connection con1;
 rollback;

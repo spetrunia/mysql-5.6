@@ -33,6 +33,7 @@ connection default;
 begin;
 select * from t1 where pk=11 for update;
 
+let $select_from_is_rowlocks_current_trx_only=1;
 --echo # Now, we will just see locks on 10=0xA and 11=0xB:
 --source suite/rocksdb/include/select_from_is_rowlocks.inc
 
