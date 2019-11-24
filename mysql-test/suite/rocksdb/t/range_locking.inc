@@ -90,7 +90,7 @@ connection con1;
 rollback;
 drop table t2;
 
-# Cleanup
+# cleanup
 connection default;
 disconnect con1;
 disconnect con2;
@@ -99,6 +99,15 @@ drop table t1;
 --echo #
 --echo # Test INFORMATION_SCHEMA.lock_info in range-locking mode
 --echo #
+
+connect (con1,localhost,root,,);
+connection con1;
+eval create table t0 (a int primary key);
+begin;
+insert into t0 values (1);
+connection default;
+
+
 eval
 create table t1 (
   pk int,
@@ -112,6 +121,8 @@ insert into t1 values
 begin;
 select * from t1 where pk=10 for update;
 
+#let TRX1_ID=`(select transaction_id from information_schema.rocksdb_trx where thread_id=connection_id())` ;
+let $select_from_is_rowlocks_current_trx_only=1;
 --source suite/rocksdb/include/select_from_is_rowlocks.inc
 
 delete from t1 where pk between 25 and 40;
@@ -127,6 +138,11 @@ select * from t1 where pk between 2 and 9 for update;
 rollback;
 
 drop table t1;
+connection con1;
+rollback;
+drop table t0;
+connection default;
+disconnect con1;
 
 --echo #
 --echo # MDEV-18104: MyRocks-Gap-Lock: range locking bounds are incorrect for multi-part keys
