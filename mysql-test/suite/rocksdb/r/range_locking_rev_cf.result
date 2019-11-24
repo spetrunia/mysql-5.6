@@ -99,12 +99,12 @@ pk	a
 10	10
 # select * from information_schema.rocksdb_locks; # With replacements by select_from_is_rowlocks.inc
 COLUMN_FAMILY_ID	TRANSACTION_ID	KEY	mode
-$cf_id	$trx_id	0000${indexnr}8000000a	X
+$cf_id	$trx_id	00${indexnr}8000000a	X
 delete from t1 where pk between 25 and 40;
 # select * from information_schema.rocksdb_locks; # With replacements by select_from_is_rowlocks.inc
 COLUMN_FAMILY_ID	TRANSACTION_ID	KEY	mode
-$cf_id	$trx_id	0000${indexnr}8000000a	X
-$cf_id	$trx_id	0000${indexnr}80000028 - 0100${indexnr}80000019	X
+$cf_id	$trx_id	00${indexnr}8000000a	X
+$cf_id	$trx_id	00${indexnr}80000028 - 01${indexnr}80000019	X
 rollback;
 begin;
 # The following will show a range lock on 2-9 and also a point lock on 10.
@@ -113,8 +113,8 @@ select * from t1 where pk between 2 and 9 for update;
 pk	a
 # select * from information_schema.rocksdb_locks; # With replacements by select_from_is_rowlocks.inc
 COLUMN_FAMILY_ID	TRANSACTION_ID	KEY	mode
-$cf_id	$trx_id	0000${indexnr}80000009 - 0100${indexnr}80000002	X
-$cf_id	$trx_id	0000${indexnr}8000000a	X
+$cf_id	$trx_id	00${indexnr}80000009 - 01${indexnr}80000002	X
+$cf_id	$trx_id	00${indexnr}8000000a	X
 rollback;
 drop table t1;
 connection con1;
@@ -397,8 +397,8 @@ pk1	pk2	a
 3	0	30
 # select * from information_schema.rocksdb_locks; # With replacements by select_from_is_rowlocks.inc
 COLUMN_FAMILY_ID	TRANSACTION_ID	KEY	mode
-$cf_id	$trx_id	0000${indexnr}8000000280000009	X
-$cf_id	$trx_id	0000${indexnr}80000003 - 0100${indexnr}80000003	X
+$cf_id	$trx_id	00${indexnr}8000000280000009	X
+$cf_id	$trx_id	00${indexnr}80000003 - 01${indexnr}80000003	X
 rollback;
 #
 # Test range locking for ranges with HA_READ_PREFIX_LAST_OR_PREV
@@ -423,8 +423,8 @@ pk1	pk2	a
 4	5	45
 # select * from information_schema.rocksdb_locks; # With replacements by select_from_is_rowlocks.inc
 COLUMN_FAMILY_ID	TRANSACTION_ID	KEY	mode
-$cf_id	$trx_id	0000${indexnr}8000000480000004	X
-$cf_id	$trx_id	0000${indexnr}8000000480000008 - 0100${indexnr}8000000480000005	X
+$cf_id	$trx_id	00${indexnr}8000000480000004	X
+$cf_id	$trx_id	00${indexnr}8000000480000008 - 01${indexnr}8000000480000005	X
 rollback;
 connection con1;
 rollback;

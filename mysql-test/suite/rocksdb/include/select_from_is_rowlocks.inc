@@ -17,10 +17,10 @@ set @cf_id=(select column_family from information_schema.rocksdb_ddl
             where table_name='t1' and index_name='PRIMARY');
 set @rtrx_id=(select transaction_id from information_schema.rocksdb_trx
               where thread_id=connection_id());
-set @indexnr= (select lower(lpad(hex(index_number),6,'0')) from information_schema.rocksdb_ddl
+set @indexnr= (select lower(lpad(hex(index_number),8,'0')) from information_schema.rocksdb_ddl
                where table_name='t1' and index_name='PRIMARY');
 
-set @indexnr_next= (select lower(lpad(hex(index_number+1),6,'0'))
+set @indexnr_next= (select lower(lpad(hex(index_number+1),8,'0'))
                     from information_schema.rocksdb_ddl
                     where table_name='t1' and index_name='PRIMARY');
 
