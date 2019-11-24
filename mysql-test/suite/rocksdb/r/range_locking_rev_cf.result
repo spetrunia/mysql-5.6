@@ -80,6 +80,12 @@ drop table t1;
 #
 # Test INFORMATION_SCHEMA.lock_info in range-locking mode
 #
+connect  con1,localhost,root,,;
+connection con1;
+create table t0 (a int primary key);
+begin;
+insert into t0 values (1);
+connection default;
 create table t1 (
 pk int,
 a int,
@@ -111,6 +117,11 @@ $cf_id	$trx_id	0000${indexnr}80000009 - 0100${indexnr}80000002	X
 $cf_id	$trx_id	0000${indexnr}8000000a	X
 rollback;
 drop table t1;
+connection con1;
+rollback;
+drop table t0;
+connection default;
+disconnect con1;
 #
 # MDEV-18104: MyRocks-Gap-Lock: range locking bounds are incorrect for multi-part keys
 #
