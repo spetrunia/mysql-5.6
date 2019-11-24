@@ -20,7 +20,8 @@ set @rtrx_id=(select transaction_id from information_schema.rocksdb_trx
 set @indexnr= (select lower(lpad(hex(index_number),6,'0')) from information_schema.rocksdb_ddl
                where table_name='t1' and index_name='PRIMARY');
 
-set @indexnr_next= (select lpad(hex(index_number+1),6,'0') from information_schema.rocksdb_ddl
+set @indexnr_next= (select lower(lpad(hex(index_number+1),6,'0'))
+                    from information_schema.rocksdb_ddl
                     where table_name='t1' and index_name='PRIMARY');
 
 let $extra_where = where 1;
