@@ -34,6 +34,7 @@ class LockingIterator : public rocksdb::Iterator {
 
   rocksdb::Transaction *txn_;
   rocksdb::ColumnFamilyHandle* cfh_;
+  bool m_is_rev_cf;
   rocksdb::ReadOptions read_opts_;
   rocksdb::Iterator *iter_;
   rocksdb::Status status_;
@@ -44,9 +45,10 @@ class LockingIterator : public rocksdb::Iterator {
  public:
   LockingIterator(rocksdb::Transaction *txn,
                   rocksdb::ColumnFamilyHandle *cfh,
+                  bool is_rev_cf,
                   const rocksdb::ReadOptions& opts
                   ) :
-    txn_(txn), cfh_(cfh), read_opts_(opts), iter_(nullptr),
+    txn_(txn), cfh_(cfh), m_is_rev_cf(is_rev_cf), read_opts_(opts), iter_(nullptr),
     status_(rocksdb::Status::InvalidArgument()), valid_(false) {}
 
   ~LockingIterator() {
@@ -98,10 +100,11 @@ class LockingIterator : public rocksdb::Iterator {
       */
       DEBUG_SYNC(current_thd, "rocksdb.locking_iter_scan");
       auto end_key = iter_->key();
+      bool endp_arg= m_is_rev_cf;
       if (forward)
-        status_ = txn_->GetRangeLock(cfh_, rocksdb::Endpoint(target), rocksdb::Endpoint(end_key));
+        status_ = txn_->GetRangeLock(cfh_, rocksdb::Endpoint(target, endp_arg), rocksdb::Endpoint(end_key, endp_arg));
       else
-        status_ = txn_->GetRangeLock(cfh_, rocksdb::Endpoint(end_key), rocksdb::Endpoint(target));
+        status_ = txn_->GetRangeLock(cfh_, rocksdb::Endpoint(end_key, endp_arg), rocksdb::Endpoint(target, endp_arg));
 
       if (!status_.ok()) {
         // Failed to get a lock (most likely lock wait timeout)
@@ -169,6 +172,7 @@ class LockingIterator : public rocksdb::Iterator {
 rocksdb::Iterator*
 GetLockingIterator(rocksdb::Transaction *trx,
                    const rocksdb::ReadOptions& read_options,
-                   rocksdb::ColumnFamilyHandle* column_family);
+                   rocksdb::ColumnFamilyHandle* column_family,
+                   bool is_rev_cf);
 
 } // namespace myrocks
