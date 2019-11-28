@@ -2769,6 +2769,8 @@ class Rdb_transaction {
 
   rocksdb::Status lock_singlepoint_range(rocksdb::ColumnFamilyHandle *const cf,
                                          const rocksdb::Slice &point) {
+    // Normally, one needs to "flip" the endpoint type for reverse-ordered CFs.
+    // But here we are locking just one point so this is not necessary.
     rocksdb::Endpoint endp(point, false);
     return lock_range(cf, endp, endp);
   }
@@ -3177,6 +3179,7 @@ class Rdb_transaction {
   virtual rocksdb::Iterator *get_iterator(
       const rocksdb::ReadOptions &options,
       rocksdb::ColumnFamilyHandle *column_family,
+      bool is_rev_cf,
       bool use_locking_iterator=false) = 0;
 
   virtual void multi_get(rocksdb::ColumnFamilyHandle *const column_family,
@@ -3187,7 +3190,8 @@ class Rdb_transaction {
 
 
   rocksdb::Iterator *get_iterator(
-      rocksdb::ColumnFamilyHandle *const column_family, bool skip_bloom_filter,
+      rocksdb::ColumnFamilyHandle *const column_family, bool is_rev_cf,
+      bool skip_bloom_filter,
       bool fill_cache, const rocksdb::Slice &eq_cond_lower_bound,
       const rocksdb::Slice &eq_cond_upper_bound, bool read_current = false,
       bool create_snapshot = true,
@@ -3220,7 +3224,7 @@ class Rdb_transaction {
     if (read_current) {
       options.snapshot = nullptr;
     }
-    return get_iterator(options, column_family, use_locking_iterator);
+    return get_iterator(options, column_family, is_rev_cf, use_locking_iterator);
   }
 
   virtual bool is_tx_started() const = 0;
@@ -3608,10 +3612,11 @@ class Rdb_transaction_impl : public Rdb_transaction {
   rocksdb::Iterator *get_iterator(
       const rocksdb::ReadOptions &options,
       rocksdb::ColumnFamilyHandle *const column_family,
+      bool is_rev_cf,
       bool use_locking_iterator) override {
     global_stats.queries[QUERIES_RANGE].inc();
     if (use_locking_iterator)
-      return GetLockingIterator(m_rocksdb_tx, options, column_family);
+      return GetLockingIterator(m_rocksdb_tx, options, column_family, is_rev_cf);
     else
       return m_rocksdb_tx->GetIterator(options, column_family);
   }
@@ -3912,6 +3917,7 @@ class Rdb_writebatch_impl : public Rdb_transaction {
   rocksdb::Iterator *get_iterator(
       const rocksdb::ReadOptions &options,
       rocksdb::ColumnFamilyHandle *const /* column_family */,
+      bool is_rev_cf,
       bool use_locking_iterator) override {
     DBUG_ASSERT(!use_locking_iterator);
     const auto it = rdb->NewIterator(options);
@@ -10058,7 +10064,8 @@ int ha_rocksdb::check_and_lock_sk(const uint key_id,
   }
 
   rocksdb::Iterator *const iter = row_info.tx->get_iterator(
-      kd.get_cf(), total_order_seek, fill_cache, lower_bound_slice,
+      kd.get_cf(), kd.m_is_reverse_cf, total_order_seek, fill_cache, 
+      lower_bound_slice,
       upper_bound_slice, true /* read current data */,
       false /* acquire snapshot */);
   /*
@@ -10711,7 +10718,8 @@ void ha_rocksdb::setup_scan_iterator(const Rdb_key_def &kd,
       read_opts.snapshot = m_scan_it_snapshot;
       m_scan_it = rdb->NewIterator(read_opts, kd.get_cf());
     } else {
-      m_scan_it = tx->get_iterator(kd.get_cf(), skip_bloom, fill_cache,
+      m_scan_it = tx->get_iterator(kd.get_cf(), kd.m_is_reverse_cf,
+                                   skip_bloom, fill_cache,
                                    m_scan_it_lower_bound_slice,
                                    m_scan_it_upper_bound_slice,
                                    /*read_current*/ false,
@@ -15545,7 +15553,7 @@ rocksdb::Iterator *rdb_tx_get_iterator(
     Rdb_transaction *tx, const rocksdb::ReadOptions &options,
     rocksdb::ColumnFamilyHandle *const column_family) {
   global_stats.queries[QUERIES_RANGE].inc();
-  return tx->get_iterator(options, column_family);
+  return tx->get_iterator(options, column_family, false);
 }
 
 bool rdb_tx_started(Rdb_transaction *tx) { return tx->is_tx_started(); }
