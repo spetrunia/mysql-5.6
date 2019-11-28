@@ -25,15 +25,15 @@ pk	a
 # Now for pk=5 we should see two locks by TRX1 and TRX2 with mode=S:
 # select * from information_schema.rocksdb_locks; # With replacements by select_from_is_rowlocks.inc
 COLUMN_FAMILY_ID	TRANSACTION_ID	KEY	mode
-$cf_id	$TRX1_ID	0000${indexnr}80000003	X
-$cf_id	$TRX1_ID	0000${indexnr}80000005	S
-$cf_id	$TRX2_ID	0000${indexnr}80000005	S
+$cf_id	$TRX1_ID	00${indexnr}80000003	X
+$cf_id	$TRX1_ID	00${indexnr}80000005	S
+$cf_id	$TRX2_ID	00${indexnr}80000005	S
 rollback;
 # Now, TRX2_ID should be gone:
 # select * from information_schema.rocksdb_locks; # With replacements by select_from_is_rowlocks.inc
 COLUMN_FAMILY_ID	TRANSACTION_ID	KEY	mode
-$cf_id	$TRX1_ID	0000${indexnr}80000003	X
-$cf_id	$TRX1_ID	0000${indexnr}80000005	S
+$cf_id	$TRX1_ID	00${indexnr}80000003	X
+$cf_id	$TRX1_ID	00${indexnr}80000005	S
 connection default;
 # Get a read lock on pk=3 (where we have a write lock).
 #  The result should be that we will still have a write lock
@@ -42,8 +42,8 @@ pk	a
 3	3
 # select * from information_schema.rocksdb_locks; # With replacements by select_from_is_rowlocks.inc
 COLUMN_FAMILY_ID	TRANSACTION_ID	KEY	mode
-$cf_id	$TRX1_ID	0000${indexnr}80000003	X
-$cf_id	$TRX1_ID	0000${indexnr}80000005	S
+$cf_id	$TRX1_ID	00${indexnr}80000003	X
+$cf_id	$TRX1_ID	00${indexnr}80000005	S
 # Get a write lock on pk=5 (where we have a read lock).
 #  The result should be that we will have a write lock.
 select * from t1 where pk=5 for update;
@@ -51,8 +51,8 @@ pk	a
 5	5
 # select * from information_schema.rocksdb_locks; # With replacements by select_from_is_rowlocks.inc
 COLUMN_FAMILY_ID	TRANSACTION_ID	KEY	mode
-$cf_id	$TRX1_ID	0000${indexnr}80000003	X
-$cf_id	$TRX1_ID	0000${indexnr}80000005	X
+$cf_id	$TRX1_ID	00${indexnr}80000003	X
+$cf_id	$TRX1_ID	00${indexnr}80000005	X
 connection default;
 rollback;
 #
@@ -114,13 +114,13 @@ pk	a
 5	5
 # select * from information_schema.rocksdb_locks; # With replacements by select_from_is_rowlocks.inc
 COLUMN_FAMILY_ID	TRANSACTION_ID	KEY	mode
-$cf_id	$TRX1_ID	0000${indexnr+1}80000002 - 0100${indexnr+1}80000005	X
-$cf_id	$TRX1_ID	0000${indexnr}80000002	S
-$cf_id	$TRX1_ID	0000${indexnr}80000003	S
-$cf_id	$TRX1_ID	0000${indexnr}80000004	S
-$cf_id	$TRX1_ID	0000${indexnr}80000005	S
-$cf_id	$TRX1_ID	0000${indexnr}80000006	S
-$cf_id	$TRX2_ID	0000${indexnr}80000384	X
+$cf_id	$TRX1_ID	00${indexnr+1}80000002 - 01${indexnr+1}80000005	X
+$cf_id	$TRX1_ID	00${indexnr}80000002	S
+$cf_id	$TRX1_ID	00${indexnr}80000003	S
+$cf_id	$TRX1_ID	00${indexnr}80000004	S
+$cf_id	$TRX1_ID	00${indexnr}80000005	S
+$cf_id	$TRX1_ID	00${indexnr}80000006	S
+$cf_id	$TRX2_ID	00${indexnr}80000384	X
 rollback;
 disconnect con1;
 drop table t0,t1;
@@ -175,34 +175,34 @@ connection con1;
 insert into t1 select 2000+A.a, 0 from t0 A;
 # select * from information_schema.rocksdb_locks; # With replacements by select_from_is_rowlocks.inc
 COLUMN_FAMILY_ID	TRANSACTION_ID	KEY	mode
-$cf_id	$TRX2_ID	0000${indexnr}80000000	X
-$cf_id	$TRX2_ID	0000${indexnr}80000001	X
-$cf_id	$TRX2_ID	0000${indexnr}80000002	X
-$cf_id	$TRX2_ID	0000${indexnr}80000003	X
-$cf_id	$TRX2_ID	0000${indexnr}80000004	X
-$cf_id	$TRX2_ID	0000${indexnr}80000005	X
-$cf_id	$TRX2_ID	0000${indexnr}80000006	X
-$cf_id	$TRX2_ID	0000${indexnr}80000007	X
-$cf_id	$TRX2_ID	0000${indexnr}80000008	X
-$cf_id	$TRX2_ID	0000${indexnr}80000009	X
-$cf_id	$TRX1_ID	0000${indexnr}800003e9	S
-$cf_id	$TRX2_ID	0000${indexnr}800003e9	S
-$cf_id	$TRX1_ID	0000${indexnr}8000044c	S
-$cf_id	$TRX2_ID	0000${indexnr}8000044c	S
-$cf_id	$TRX1_ID	0000${indexnr}800004b0	S
-$cf_id	$TRX2_ID	0000${indexnr}800004b0	S
-$cf_id	$TRX1_ID	0000${indexnr}800007d0	X
-$cf_id	$TRX1_ID	0000${indexnr}800007d1	X
-$cf_id	$TRX1_ID	0000${indexnr}800007d2	X
-$cf_id	$TRX1_ID	0000${indexnr}800007d3	X
-$cf_id	$TRX1_ID	0000${indexnr}800007d4	X
-$cf_id	$TRX1_ID	0000${indexnr}800007d5	X
-$cf_id	$TRX1_ID	0000${indexnr}800007d6	X
-$cf_id	$TRX1_ID	0000${indexnr}800007d7	X
-$cf_id	$TRX1_ID	0000${indexnr}800007d8	X
-$cf_id	$TRX1_ID	0000${indexnr}800007d9	X
-$cf_id	$TRX1_ID	0000${indexnr}800009c4	S
-$cf_id	$TRX2_ID	0000${indexnr}800009ce	S
+$cf_id	$TRX2_ID	00${indexnr}80000000	X
+$cf_id	$TRX2_ID	00${indexnr}80000001	X
+$cf_id	$TRX2_ID	00${indexnr}80000002	X
+$cf_id	$TRX2_ID	00${indexnr}80000003	X
+$cf_id	$TRX2_ID	00${indexnr}80000004	X
+$cf_id	$TRX2_ID	00${indexnr}80000005	X
+$cf_id	$TRX2_ID	00${indexnr}80000006	X
+$cf_id	$TRX2_ID	00${indexnr}80000007	X
+$cf_id	$TRX2_ID	00${indexnr}80000008	X
+$cf_id	$TRX2_ID	00${indexnr}80000009	X
+$cf_id	$TRX1_ID	00${indexnr}800003e9	S
+$cf_id	$TRX2_ID	00${indexnr}800003e9	S
+$cf_id	$TRX1_ID	00${indexnr}8000044c	S
+$cf_id	$TRX2_ID	00${indexnr}8000044c	S
+$cf_id	$TRX1_ID	00${indexnr}800004b0	S
+$cf_id	$TRX2_ID	00${indexnr}800004b0	S
+$cf_id	$TRX1_ID	00${indexnr}800007d0	X
+$cf_id	$TRX1_ID	00${indexnr}800007d1	X
+$cf_id	$TRX1_ID	00${indexnr}800007d2	X
+$cf_id	$TRX1_ID	00${indexnr}800007d3	X
+$cf_id	$TRX1_ID	00${indexnr}800007d4	X
+$cf_id	$TRX1_ID	00${indexnr}800007d5	X
+$cf_id	$TRX1_ID	00${indexnr}800007d6	X
+$cf_id	$TRX1_ID	00${indexnr}800007d7	X
+$cf_id	$TRX1_ID	00${indexnr}800007d8	X
+$cf_id	$TRX1_ID	00${indexnr}800007d9	X
+$cf_id	$TRX1_ID	00${indexnr}800009c4	S
+$cf_id	$TRX2_ID	00${indexnr}800009ce	S
 connection default;
 show status like 'rocksdb_locktree_current_lock_memory';
 Variable_name	Value
@@ -220,26 +220,26 @@ connection con1;
 insert into t1 select 3000+A.a, 0 from t0 A;
 # select * from information_schema.rocksdb_locks; # With replacements by select_from_is_rowlocks.inc
 COLUMN_FAMILY_ID	TRANSACTION_ID	KEY	mode
-$cf_id	$TRX2_ID	0000${indexnr}80000000 - 0000${indexnr}80000009	X
-$cf_id	$TRX1_ID	0000${indexnr}800003e9	S
-$cf_id	$TRX2_ID	0000${indexnr}800003e9	S
-$cf_id	$TRX1_ID	0000${indexnr}8000044c	S
-$cf_id	$TRX2_ID	0000${indexnr}8000044c	S
-$cf_id	$TRX1_ID	0000${indexnr}800004b0	S
-$cf_id	$TRX2_ID	0000${indexnr}800004b0	S
-$cf_id	$TRX1_ID	0000${indexnr}800007d0 - 0000${indexnr}800007d9	X
-$cf_id	$TRX1_ID	0000${indexnr}800009c4	S
-$cf_id	$TRX2_ID	0000${indexnr}800009ce	S
-$cf_id	$TRX1_ID	0000${indexnr}80000bb8	X
-$cf_id	$TRX1_ID	0000${indexnr}80000bb9	X
-$cf_id	$TRX1_ID	0000${indexnr}80000bba	X
-$cf_id	$TRX1_ID	0000${indexnr}80000bbb	X
-$cf_id	$TRX1_ID	0000${indexnr}80000bbc	X
-$cf_id	$TRX1_ID	0000${indexnr}80000bbd	X
-$cf_id	$TRX1_ID	0000${indexnr}80000bbe	X
-$cf_id	$TRX1_ID	0000${indexnr}80000bbf	X
-$cf_id	$TRX1_ID	0000${indexnr}80000bc0	X
-$cf_id	$TRX1_ID	0000${indexnr}80000bc1	X
+$cf_id	$TRX2_ID	00${indexnr}80000000 - 00${indexnr}80000009	X
+$cf_id	$TRX1_ID	00${indexnr}800003e9	S
+$cf_id	$TRX2_ID	00${indexnr}800003e9	S
+$cf_id	$TRX1_ID	00${indexnr}8000044c	S
+$cf_id	$TRX2_ID	00${indexnr}8000044c	S
+$cf_id	$TRX1_ID	00${indexnr}800004b0	S
+$cf_id	$TRX2_ID	00${indexnr}800004b0	S
+$cf_id	$TRX1_ID	00${indexnr}800007d0 - 00${indexnr}800007d9	X
+$cf_id	$TRX1_ID	00${indexnr}800009c4	S
+$cf_id	$TRX2_ID	00${indexnr}800009ce	S
+$cf_id	$TRX1_ID	00${indexnr}80000bb8	X
+$cf_id	$TRX1_ID	00${indexnr}80000bb9	X
+$cf_id	$TRX1_ID	00${indexnr}80000bba	X
+$cf_id	$TRX1_ID	00${indexnr}80000bbb	X
+$cf_id	$TRX1_ID	00${indexnr}80000bbc	X
+$cf_id	$TRX1_ID	00${indexnr}80000bbd	X
+$cf_id	$TRX1_ID	00${indexnr}80000bbe	X
+$cf_id	$TRX1_ID	00${indexnr}80000bbf	X
+$cf_id	$TRX1_ID	00${indexnr}80000bc0	X
+$cf_id	$TRX1_ID	00${indexnr}80000bc1	X
 connection con1;
 rollback;
 connection default;
