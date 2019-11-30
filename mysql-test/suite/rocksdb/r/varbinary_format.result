@@ -1,4 +1,3 @@
-set @skip_head=9 + if(@@rocksdb_use_range_locking, 2, 0);
 CREATE TABLE t1(
 vb VARBINARY(64) primary key
 ) ENGINE=rocksdb;
@@ -46,8 +45,8 @@ hex(vb)
 00000000000000000000000000000000000000000000000000000000000000
 0000000000000000000000000000000000000000000000000000000000000000
 000000000000000000000000000000000000000000000000000000000000000000
-SELECT SUBSTRING(a.key,@skip_head) FROM information_schema.rocksdb_locks AS a ORDER BY a.key;
-SUBSTRING(a.key,@skip_head)
+SELECT SUBSTRING(a.key,9) FROM information_schema.rocksdb_locks AS a ORDER BY a.key;
+SUBSTRING(a.key,9)
 000000000000000001
 000000000000000002
 000000000000000003
@@ -112,8 +111,8 @@ hex(vb)
 00000000000000000000000000000000000000000000000000000000000000
 0000000000000000000000000000000000000000000000000000000000000000
 000000000000000000000000000000000000000000000000000000000000000000
-SELECT SUBSTRING(a.key,@skip_head) FROM information_schema.rocksdb_locks AS a ORDER BY a.key;
-SUBSTRING(a.key,@skip_head)
+SELECT SUBSTRING(a.key,9) FROM information_schema.rocksdb_locks AS a ORDER BY a.key;
+SUBSTRING(a.key,9)
 0000000000000000f8
 0000000000000000f9
 0000000000000000fa
@@ -176,8 +175,8 @@ aaaaaaaaaa
 aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
 aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
 aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
-SELECT SUBSTRING(a.key,@skip_head) FROM information_schema.rocksdb_locks AS a ORDER BY a.key;
-SUBSTRING(a.key,@skip_head)
+SELECT SUBSTRING(a.key,9) FROM information_schema.rocksdb_locks AS a ORDER BY a.key;
+SUBSTRING(a.key,9)
 610000000000000001
 616100000000000002
 616161000000000003
@@ -242,8 +241,8 @@ aaaaaaaaaa
 aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
 aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
 aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
-SELECT SUBSTRING(a.key,@skip_head) FROM information_schema.rocksdb_locks AS a ORDER BY a.key;
-SUBSTRING(a.key,@skip_head)
+SELECT SUBSTRING(a.key,9) FROM information_schema.rocksdb_locks AS a ORDER BY a.key;
+SUBSTRING(a.key,9)
 6100000000000000f8
 6161000000000000f9
 6161610000000000fa
