@@ -2825,6 +2825,11 @@ class Rdb_transaction {
     m_is_delayed_snapshot = false;
   }
 
+  void locking_iter_created() {
+    if (!m_snapshot_timestamp)
+      rdb->GetEnv()->GetCurrentTime(&m_snapshot_timestamp);
+  }
+
   virtual void acquire_snapshot(bool acquire_now) = 0;
   virtual void release_snapshot() = 0;
 
@@ -3615,8 +3620,10 @@ class Rdb_transaction_impl : public Rdb_transaction {
       bool is_rev_cf,
       bool use_locking_iterator) override {
     global_stats.queries[QUERIES_RANGE].inc();
-    if (use_locking_iterator)
+    if (use_locking_iterator) {
+      locking_iter_created();
       return GetLockingIterator(m_rocksdb_tx, options, column_family, is_rev_cf);
+    }
     else
       return m_rocksdb_tx->GetIterator(options, column_family);
   }
