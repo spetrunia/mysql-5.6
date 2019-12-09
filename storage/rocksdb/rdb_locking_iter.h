@@ -86,7 +86,8 @@ class LockingIterator : public rocksdb::Iterator {
   }
 
  private:
-  template <bool forward> void Scan(const rocksdb::Slice& target, bool call_next) {
+  template <bool forward> void Scan(const rocksdb::Slice& target,
+                                    bool call_next) {
     if (!iter_->Valid()) {
       status_ = iter_->status();
       valid_ = false;
@@ -101,10 +102,15 @@ class LockingIterator : public rocksdb::Iterator {
       DEBUG_SYNC(current_thd, "rocksdb.locking_iter_scan");
       auto end_key = iter_->key();
       bool endp_arg= m_is_rev_cf;
-      if (forward)
-        status_ = txn_->GetRangeLock(cfh_, rocksdb::Endpoint(target, endp_arg), rocksdb::Endpoint(end_key, endp_arg));
-      else
-        status_ = txn_->GetRangeLock(cfh_, rocksdb::Endpoint(end_key, endp_arg), rocksdb::Endpoint(target, endp_arg));
+      if (forward) {
+        status_ = txn_->GetRangeLock(cfh_,
+                                     rocksdb::Endpoint(target, endp_arg),
+                                     rocksdb::Endpoint(end_key, endp_arg));
+      } else {
+        status_ = txn_->GetRangeLock(cfh_,
+                                     rocksdb::Endpoint(end_key, endp_arg),
+                                     rocksdb::Endpoint(target, endp_arg));
+      }
 
       if (!status_.ok()) {
         // Failed to get a lock (most likely lock wait timeout)
@@ -138,8 +144,8 @@ class LockingIterator : public rocksdb::Iterator {
       }
 
       if (iter_->Valid()) {
-        int invert= forward? 1 : -1;
-        if (cmp->Compare(iter_->key(), rocksdb::Slice(end_key_copy)) * invert <= 0) {
+        int inv = forward ? 1 : -1;
+        if (cmp->Compare(iter_->key(), rocksdb::Slice(end_key_copy))*inv <= 0) {
           // Ok, the found key is within the range.
           status_ = rocksdb::Status::OK();
           valid_= true;

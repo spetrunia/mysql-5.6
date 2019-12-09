@@ -8604,6 +8604,25 @@ int ha_rocksdb::set_range_lock(Rdb_transaction *tx,
     return 0;
   }
 
+  /*
+    RocksDB's iterator is reading the snapshot of the data that was taken at
+    the time the iterator was created.
+
+    After we've got a lock on the range, we'll need to refresh the iterator
+    to read the latest contents. (If we use the iterator created before the
+    lock_range() call, we may miss the changes that were made/committed after
+    the iterator was created but before the lock_range() call was made).
+
+    RocksDB has Iterator::Refresh() method, but alas, it is not implemented for
+    the iterator returned by Transaction object (Transaction object returns
+    BaseDeltaIterator which allows one to see the transactions's own changes).
+
+    Our solution to this is to release the iterator and create the new one.
+    We release it here, it will be created as soon as there's a need to read
+    records.
+  */
+  release_scan_iterator();
+
   auto s= tx->lock_range(kd.get_cf(), start_endp, end_endp);
   if (!s.ok()) {
     return (tx->set_status_error(table->in_use, s, kd, m_tbl_def,
@@ -10704,7 +10723,7 @@ void ha_rocksdb::setup_scan_iterator(const Rdb_key_def &kd,
     and
     re-create Iterator.
   */
-  // psergey-todo: create Locking Iterator here..
+
   if (m_scan_it_skips_bloom != skip_bloom || use_locking_iterator) {
     release_scan_iterator();
   }
