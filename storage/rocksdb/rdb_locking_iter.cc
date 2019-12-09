@@ -44,6 +44,7 @@ void LockingIterator::SeekForPrev(const rocksdb::Slice& target) {
     next_key is, we reach it by calling { Seek(current_key); Next(); }
 */
 void LockingIterator::Next() {
+  DEBUG_SYNC(current_thd, "rocksdb.LockingIterator.Next");
   assert(Valid());
   // Save the current key value. We need it as the left endpoint
   // of the range lock we're going to acquire
