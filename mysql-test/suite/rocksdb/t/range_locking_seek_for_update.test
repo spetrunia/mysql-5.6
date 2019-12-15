@@ -254,3 +254,35 @@ rollback;
 disconnect con1;
 connection default;
 drop table t0,t1;
+
+--echo #
+--echo # A test: full table scan doesn't lock gaps
+--echo #
+
+create table t1 (
+  pk int primary key,
+  a int
+) engine=rocksdb;
+
+insert into t1 values (10,10),(20,20),(30,30);
+
+connect (con1,localhost,root,,);
+connect (con2,localhost,root,,);
+
+connection con1;
+begin;
+
+select * from t1 for update;
+
+connection con2;
+
+--error ER_LOCK_WAIT_TIMEOUT
+insert into t1 values (5,5);
+
+connection con1;
+rollback;
+
+disconnect con1;
+disconnect con2;
+connection default;
+drop table t1;
