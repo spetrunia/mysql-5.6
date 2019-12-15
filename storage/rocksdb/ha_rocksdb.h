@@ -321,7 +321,7 @@ class ha_rocksdb : public my_core::handler {
                                   rocksdb::Slice *upper_bound_slice);
   void setup_scan_iterator(const Rdb_key_def &kd, rocksdb::Slice *slice,
                            const bool use_all_keys, const uint eq_cond_len,
-                           bool use_locking_iterator=false)
+                           bool use_locking_iterator)
       MY_ATTRIBUTE((__nonnull__));
 
   int set_range_lock(Rdb_transaction *tx,
@@ -1031,6 +1031,8 @@ class ha_rocksdb : public my_core::handler {
   bool m_in_rpl_update_rows;
 
   bool m_force_skip_unique_check;
+
+  int iter_status_to_retval(rocksdb::Iterator *it, const Rdb_key_def &kd, int not_found_code);
 };
 
 /*

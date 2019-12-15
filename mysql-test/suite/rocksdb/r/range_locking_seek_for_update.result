@@ -173,7 +173,7 @@ begin;
 delete from t1 where pk=7;
 set debug_sync='now SIGNAL spoiler_inserted';
 connection default;
-ERROR HY000: Lock wait timeout exceeded; try restarting transaction: 
+ERROR HY000: Lock wait timeout exceeded; try restarting transaction: Timeout on index: test.t1.PRIMARY
 rollback;
 connection con1;
 rollback;
@@ -225,7 +225,7 @@ pk	a
 connection default;
 begin;
 select * from t1 order by pk desc limit 2 for update;
-ERROR HY000: Lock wait timeout exceeded; try restarting transaction: 
+ERROR HY000: Lock wait timeout exceeded; try restarting transaction: Timeout on index: test.t1.PRIMARY
 rollback;
 connection con1;
 rollback;
@@ -236,10 +236,36 @@ pk	a
 connection default;
 begin;
 select * from t1 order by pk desc limit 2 for update;
-ERROR HY000: Lock wait timeout exceeded; try restarting transaction: 
+ERROR HY000: Lock wait timeout exceeded; try restarting transaction: Timeout on index: test.t1.PRIMARY
 rollback;
 connection con1;
 rollback;
 disconnect con1;
 connection default;
 drop table t0,t1;
+#
+# A test: full table scan doesn't lock gaps
+#
+create table t1 (
+pk int primary key,
+a int
+) engine=rocksdb;
+insert into t1 values (10,10),(20,20),(30,30);
+connect  con1,localhost,root,,;
+connect  con2,localhost,root,,;
+connection con1;
+begin;
+select * from t1 for update;
+pk	a
+10	10
+20	20
+30	30
+connection con2;
+insert into t1 values (5,5);
+ERROR HY000: Lock wait timeout exceeded; try restarting transaction: Timeout on index: test.t1.PRIMARY
+connection con1;
+rollback;
+disconnect con1;
+disconnect con2;
+connection default;
+drop table t1;

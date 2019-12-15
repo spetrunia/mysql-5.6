@@ -8012,14 +8012,18 @@ int ha_rocksdb::read_before_key(const Rdb_key_def &kd,
 }
 
 
-inline int iter_status_to_retval(rocksdb::Iterator *it, int not_found_code) {
+int ha_rocksdb::iter_status_to_retval(rocksdb::Iterator *it,
+                                      const Rdb_key_def &kd,
+                                      int not_found_code) {
   if (it->Valid())
     return HA_EXIT_SUCCESS;
+
   rocksdb::Status s= it->status();
-  if (s.IsTimedOut())
-    return HA_ERR_LOCK_WAIT_TIMEOUT;
-  //TODO: should we handle other kinds of errors?
-  return not_found_code;
+  if (s.ok() || s.IsNotFound())
+    return not_found_code;
+
+  Rdb_transaction *&tx = get_tx_from_thd(table->in_use);
+  return tx->set_status_error(table->in_use, s, kd, m_tbl_def, m_table_handler);
 }
 
 int ha_rocksdb::read_after_key(const Rdb_key_def &kd,
@@ -8051,7 +8055,7 @@ int ha_rocksdb::read_after_key(const Rdb_key_def &kd,
 
   return is_valid_iterator(m_scan_it) ?
            HA_EXIT_SUCCESS : 
-           iter_status_to_retval(m_scan_it, HA_ERR_KEY_NOT_FOUND);
+           iter_status_to_retval(m_scan_it, kd, HA_ERR_KEY_NOT_FOUND);
 }
 
 int ha_rocksdb::position_to_correct_key(
@@ -10774,7 +10778,8 @@ void ha_rocksdb::setup_iterator_for_rnd_scan() {
 
   rocksdb::Slice table_key((const char *)m_pk_packed_tuple, key_size);
 
-  setup_scan_iterator(*m_pk_descr, &table_key, false, key_start_matching_bytes);
+  setup_scan_iterator(*m_pk_descr, &table_key, false, key_start_matching_bytes,
+                      (m_lock_rows != RDB_LOCK_NONE) && rocksdb_use_range_locking);
   m_scan_it->Seek(table_key);
   m_skip_scan_it_next_call = true;
 }
@@ -10864,7 +10869,7 @@ int ha_rocksdb::rnd_next_with_direction(uchar *const buf, bool move_forward) {
       In this case, we should return EOF.
     */
     rc = HA_ERR_END_OF_FILE;
-    DBUG_RETURN(m_scan_it ? iter_status_to_retval(m_scan_it, rc) : rc);
+    DBUG_RETURN(m_scan_it ? iter_status_to_retval(m_scan_it, *m_pk_descr, rc) : rc);
   }
 
   for (;;) {
@@ -10885,7 +10890,7 @@ int ha_rocksdb::rnd_next_with_direction(uchar *const buf, bool move_forward) {
     }
 
     if (!is_valid_iterator(m_scan_it)) {
-      rc = iter_status_to_retval(m_scan_it, HA_ERR_END_OF_FILE);
+      rc = iter_status_to_retval(m_scan_it, *m_pk_descr, HA_ERR_END_OF_FILE);
       break;
     }
 
@@ -14051,7 +14056,7 @@ static void show_rocksdb_stall_vars(THD *thd, SHOW_VAR *var, char *buff) {
 }
 
 //
-// psergey: lock tree escalation count status variable.
+// Lock Tree Status variables
 //
 static longlong rocksdb_locktree_escalation_count=1234;
 static longlong rocksdb_locktree_current_lock_memory=0;
