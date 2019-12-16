@@ -468,6 +468,52 @@ $cf_id	$trx_id	00${indexnr}8000000480000005 - 01${indexnr}8000000480000008	X
 rollback;
 connection con1;
 rollback;
-disconnect con1;
 connection default;
 drop table t0, t1;
+#
+# A bug: range locking was not used when scan started at table start or end
+#
+create table t0(a int);
+insert into t0 values (0),(1),(2),(3),(4),(5),(6),(7),(8),(9);
+create table t10(a int);
+insert into t10 select A.a + B.a* 10 + C.a * 100 from t0 A, t0 B, t0 C;
+create table t1 (
+pk int not null,
+a int,
+primary key(pk)
+) engine=rocksdb;
+insert into t1 select a*2,a*2 from t10;
+connection con1;
+begin;
+select * from t1 where pk=500 for update;
+pk	a
+500	500
+connection default;
+begin;
+select * from t1 where pk<10 order by pk limit 10 for update;
+pk	a
+0	0
+2	2
+4	4
+6	6
+8	8
+# select * from information_schema.rocksdb_locks; # With replacements by select_from_is_rowlocks.inc
+COLUMN_FAMILY_ID	TRANSACTION_ID	KEY	mode
+$cf_id	$trx_id	00${indexnr} - 00${indexnr}8000000a	X
+rollback;
+begin;
+select * from t1 where pk>1990 order by pk desc limit 10 for update;
+pk	a
+1998	1998
+1996	1996
+1994	1994
+1992	1992
+# select * from information_schema.rocksdb_locks; # With replacements by select_from_is_rowlocks.inc
+COLUMN_FAMILY_ID	TRANSACTION_ID	KEY	mode
+$cf_id	$trx_id	00${indexnr}800007c6 - 01${indexnr+1}	X
+rollback;
+connection con1;
+rollback;
+disconnect con1;
+connection default;
+drop table t0,t10,t1;

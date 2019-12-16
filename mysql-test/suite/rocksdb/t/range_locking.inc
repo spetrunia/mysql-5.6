@@ -498,7 +498,47 @@ rollback;
 
 connection con1;
 rollback;
-disconnect con1;
+
+connection default;
+drop table t0, t1;
+
+--echo #
+--echo # A bug: range locking was not used when scan started at table start or end
+--echo #
+create table t0(a int);
+insert into t0 values (0),(1),(2),(3),(4),(5),(6),(7),(8),(9);
+create table t10(a int);
+insert into t10 select A.a + B.a* 10 + C.a * 100 from t0 A, t0 B, t0 C;
+
+create table t1 (
+  pk int not null,
+  a int,
+  primary key(pk)
+) engine=rocksdb;
+
+insert into t1 select a*2,a*2 from t10;
+
+connection con1;
+begin;
+select * from t1 where pk=500 for update;
 connection default;
 
-drop table t0, t1;
+begin;
+select * from t1 where pk<10 order by pk limit 10 for update;
+
+let $select_from_is_rowlocks_current_trx_only=1;
+--source suite/rocksdb/include/select_from_is_rowlocks.inc
+rollback;
+
+begin;
+select * from t1 where pk>1990 order by pk desc limit 10 for update;
+let $select_from_is_rowlocks_current_trx_only=1;
+--source suite/rocksdb/include/select_from_is_rowlocks.inc
+rollback;
+
+connection con1;
+rollback;
+disconnect con1;
+
+connection default;
+drop table t0,t10,t1;

@@ -9430,13 +9430,17 @@ int ha_rocksdb::index_first_intern(uchar *const buf) {
   Rdb_transaction *const tx = get_or_create_tx(table->in_use);
   DBUG_ASSERT(tx != nullptr);
 
+  bool use_locking_iter;
+  if ((rc = set_range_lock(tx, kd, HA_READ_KEY_OR_NEXT, index_key,
+                           end_range, &use_locking_iter)))
+    DBUG_RETURN(rc);
+
   const bool is_new_snapshot = !tx->has_snapshot();
   // Loop as long as we get a deadlock error AND we end up creating the
   // snapshot here (i.e. it did not exist prior to this)
   for (;;) {
     setup_scan_iterator(kd, &index_key, false, key_start_matching_bytes,
-                        (rocksdb_use_range_locking &&
-                         m_lock_rows != RDB_LOCK_NONE && !end_range));
+                        use_locking_iter);
     m_scan_it->Seek(index_key);
     m_skip_scan_it_next_call = true;
 
@@ -9522,13 +9526,17 @@ int ha_rocksdb::index_last_intern(uchar *const buf) {
   Rdb_transaction *const tx = get_or_create_tx(table->in_use);
   DBUG_ASSERT(tx != nullptr);
 
+  bool use_locking_iter;
+  if ((rc = set_range_lock(tx, kd, HA_READ_PREFIX_LAST_OR_PREV, index_key,
+                           end_range, &use_locking_iter)))
+    DBUG_RETURN(rc);
+
   bool is_new_snapshot = !tx->has_snapshot();
   // Loop as long as we get a deadlock error AND we end up creating the
   // snapshot here (i.e. it did not exist prior to this)
   for (;;) {
     setup_scan_iterator(kd, &index_key, false, key_end_matching_bytes,
-                        (rocksdb_use_range_locking &&
-                         m_lock_rows != RDB_LOCK_NONE && !end_range));
+                        use_locking_iter);
     m_scan_it->SeekForPrev(index_key);
     m_skip_scan_it_next_call = false;
 
