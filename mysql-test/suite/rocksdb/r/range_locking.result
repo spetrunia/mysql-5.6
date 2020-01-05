@@ -510,7 +510,7 @@ pk	a
 1992	1992
 # select * from information_schema.rocksdb_locks; # With replacements by select_from_is_rowlocks.inc
 COLUMN_FAMILY_ID	TRANSACTION_ID	KEY	mode
-$cf_id	$trx_id	00${indexnr}800007c6 - 01${indexnr+1}	X
+$cf_id	$trx_id	00${indexnr}800007c6 - 00${indexnr+1}	X
 rollback;
 connection con1;
 rollback;

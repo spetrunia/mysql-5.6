@@ -329,6 +329,7 @@ class ha_rocksdb : public my_core::handler {
                       const enum ha_rkey_function &find_flag,
                       const rocksdb::Slice &slice,
                       const key_range *const end_key,
+                      bool flip_rev_cf,
                       bool *use_locking_iterator);
 
   void release_scan_iterator(void);

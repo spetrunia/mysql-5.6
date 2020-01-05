@@ -8393,6 +8393,7 @@ int ha_rocksdb::read_range_first(const key_range *const start_key,
 
   if (!start_key) {
     // Read first record
+    // (range locking will set the lock inside the ha_index_first call)
     result = ha_index_first(table->record[0]);
   } else {
     if (is_using_prohibited_gap_locks(
@@ -8443,6 +8444,7 @@ int ha_rocksdb::set_range_lock(Rdb_transaction *tx,
                                 const enum ha_rkey_function &find_flag,
                                 const rocksdb::Slice &slice_arg,
                                 const key_range *const end_key,
+                                bool flip_rev_cf,
                                 bool *use_locking_iterator
                                 )
 {
@@ -8591,12 +8593,19 @@ int ha_rocksdb::set_range_lock(Rdb_transaction *tx,
     no_end_endpoint= true;
   }
 
+  if (kd.m_is_reverse_cf) {
+    // Flip the endpoint flags
+    end_has_inf_suffix = !end_has_inf_suffix;
+    start_has_inf_suffix = !start_has_inf_suffix;
+  }
+
   rocksdb::Endpoint start_endp;
   rocksdb::Endpoint end_endp;
-  if (kd.m_is_reverse_cf) {
+
+  if (flip_rev_cf && kd.m_is_reverse_cf) {
     // Flip the endpoints
-    start_endp =rocksdb::Endpoint(end_slice, !end_has_inf_suffix);
-    end_endp  = rocksdb::Endpoint(slice, !start_has_inf_suffix);
+    start_endp =rocksdb::Endpoint(end_slice, end_has_inf_suffix);
+    end_endp  = rocksdb::Endpoint(slice, start_has_inf_suffix);
   } else {
     start_endp= rocksdb::Endpoint(slice, start_has_inf_suffix);
     end_endp=   rocksdb::Endpoint(end_slice, end_has_inf_suffix);
@@ -8747,7 +8756,7 @@ int ha_rocksdb::index_read_map_impl(uchar *const buf, const uchar *const key,
   bool use_locking_iterator;
   rocksdb::Slice lock_slice(reinterpret_cast<const char *>(m_sk_packed_tuple),
                                     packed_size);
-  if ((rc = set_range_lock(tx, kd, find_flag, lock_slice, end_key,
+  if ((rc = set_range_lock(tx, kd, find_flag, lock_slice, end_key, true,
                            &use_locking_iterator)))
     DBUG_RETURN(rc);
 
@@ -9432,7 +9441,7 @@ int ha_rocksdb::index_first_intern(uchar *const buf) {
 
   bool use_locking_iter;
   if ((rc = set_range_lock(tx, kd, HA_READ_KEY_OR_NEXT, index_key,
-                           end_range, &use_locking_iter)))
+                           end_range, false, &use_locking_iter)))
     DBUG_RETURN(rc);
 
   const bool is_new_snapshot = !tx->has_snapshot();
@@ -9527,8 +9536,8 @@ int ha_rocksdb::index_last_intern(uchar *const buf) {
   DBUG_ASSERT(tx != nullptr);
 
   bool use_locking_iter;
-  if ((rc = set_range_lock(tx, kd, HA_READ_PREFIX_LAST_OR_PREV, index_key,
-                           end_range, &use_locking_iter)))
+  if ((rc = set_range_lock(tx, kd, HA_READ_BEFORE_KEY, index_key,
+                           end_range, false, &use_locking_iter)))
     DBUG_RETURN(rc);
 
   bool is_new_snapshot = !tx->has_snapshot();
