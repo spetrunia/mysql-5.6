@@ -108,13 +108,12 @@ $cf_id	$trx_id	00${indexnr}80000019 - 01${indexnr}80000028	X
 rollback;
 begin;
 # The following will show a range lock on 2-9 and also a point lock on 10.
-# This is how things currently work.
+# This is how things currently work. (after MDEV-21314, not anymore)
 select * from t1 where pk between 2 and 9 for update;
 pk	a
 # select * from information_schema.rocksdb_locks; # With replacements by select_from_is_rowlocks.inc
 COLUMN_FAMILY_ID	TRANSACTION_ID	KEY	mode
 $cf_id	$trx_id	00${indexnr}80000002 - 01${indexnr}80000009	X
-$cf_id	$trx_id	00${indexnr}8000000a	X
 rollback;
 drop table t1;
 connection con1;
@@ -437,7 +436,6 @@ pk1	pk2	a
 3	0	30
 # select * from information_schema.rocksdb_locks; # With replacements by select_from_is_rowlocks.inc
 COLUMN_FAMILY_ID	TRANSACTION_ID	KEY	mode
-$cf_id	$trx_id	00${indexnr}8000000280000009	X
 $cf_id	$trx_id	00${indexnr}80000003 - 01${indexnr}80000003	X
 rollback;
 #
@@ -463,7 +461,6 @@ pk1	pk2	a
 4	5	45
 # select * from information_schema.rocksdb_locks; # With replacements by select_from_is_rowlocks.inc
 COLUMN_FAMILY_ID	TRANSACTION_ID	KEY	mode
-$cf_id	$trx_id	00${indexnr}8000000480000004	X
 $cf_id	$trx_id	00${indexnr}8000000480000005 - 01${indexnr}8000000480000008	X
 rollback;
 connection con1;

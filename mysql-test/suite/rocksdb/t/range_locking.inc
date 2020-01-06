@@ -132,7 +132,7 @@ delete from t1 where pk between 25 and 40;
 rollback;
 begin;
 --echo # The following will show a range lock on 2-9 and also a point lock on 10.
---echo # This is how things currently work.
+--echo # This is how things currently work. (after MDEV-21314, not anymore)
 select * from t1 where pk between 2 and 9 for update;
 --source suite/rocksdb/include/select_from_is_rowlocks.inc
 rollback;

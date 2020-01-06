@@ -8187,7 +8187,7 @@ int ha_rocksdb::read_row_from_primary_key(uchar *const buf) {
   memcpy(m_pk_packed_tuple, pk_data, pk_size);
   m_last_rowkey.copy(pk_data, pk_size, &my_charset_bin);
 
-  if (m_lock_rows != RDB_LOCK_NONE) {
+  if (m_lock_rows != RDB_LOCK_NONE && !rocksdb_use_range_locking) {
     /* We need to put a lock and re-read */
     rc = get_row_by_rowid(buf, m_pk_packed_tuple, pk_size);
   } else {
@@ -10796,7 +10796,8 @@ void ha_rocksdb::setup_iterator_for_rnd_scan() {
   rocksdb::Slice table_key((const char *)m_pk_packed_tuple, key_size);
 
   setup_scan_iterator(*m_pk_descr, &table_key, false, key_start_matching_bytes,
-                      (m_lock_rows != RDB_LOCK_NONE) && rocksdb_use_range_locking);
+                      (m_lock_rows != RDB_LOCK_NONE) &&
+                      rocksdb_use_range_locking && !ha_thd()->rli_slave);
   m_scan_it->Seek(table_key);
   m_skip_scan_it_next_call = true;
 }
@@ -10918,7 +10919,8 @@ int ha_rocksdb::rnd_next_with_direction(uchar *const buf, bool move_forward) {
       break;
     }
 
-    if (m_lock_rows != RDB_LOCK_NONE) {
+    if (m_lock_rows != RDB_LOCK_NONE && (!rocksdb_use_range_locking ||
+                                         ha_thd()->rli_slave)) {
       /*
         Lock the row we've just read.
 
