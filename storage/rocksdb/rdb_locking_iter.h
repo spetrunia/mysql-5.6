@@ -42,14 +42,17 @@ class LockingIterator : public rocksdb::Iterator {
   // note: an iterator that has reached EOF has status()==OK && valid_==false
   bool  valid_;
 
+  ulonglong *lock_count_;
  public:
   LockingIterator(rocksdb::Transaction *txn,
                   rocksdb::ColumnFamilyHandle *cfh,
                   bool is_rev_cf,
-                  const rocksdb::ReadOptions& opts
+                  const rocksdb::ReadOptions& opts,
+                  ulonglong *lock_count=nullptr
                   ) :
     txn_(txn), cfh_(cfh), m_is_rev_cf(is_rev_cf), read_opts_(opts), iter_(nullptr),
-    status_(rocksdb::Status::InvalidArgument()), valid_(false) {}
+    status_(rocksdb::Status::InvalidArgument()), valid_(false),
+    lock_count_(lock_count) {}
 
   ~LockingIterator() {
     delete iter_;
@@ -117,6 +120,7 @@ class LockingIterator : public rocksdb::Iterator {
         valid_ = false;
         return;
       }
+      if (lock_count_)  (*lock_count_)++;
       std::string end_key_copy= end_key.ToString();
 
       //Ok, now we have a lock which is inhibiting modifications in the range
@@ -179,6 +183,7 @@ rocksdb::Iterator*
 GetLockingIterator(rocksdb::Transaction *trx,
                    const rocksdb::ReadOptions& read_options,
                    rocksdb::ColumnFamilyHandle* column_family,
-                   bool is_rev_cf);
+                   bool is_rev_cf,
+                   ulonglong *counter);
 
 } // namespace myrocks
