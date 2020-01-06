@@ -3378,6 +3378,7 @@ class Rdb_transaction_impl : public Rdb_transaction {
   rocksdb::Status lock_range(rocksdb::ColumnFamilyHandle *const cf,
                              const rocksdb::Endpoint &start_endp,
                              const rocksdb::Endpoint &end_endp) override {
+    ++m_lock_count;
     return m_rocksdb_tx->GetRangeLock(cf, start_endp, end_endp);
   }
  private:
@@ -3622,7 +3623,8 @@ class Rdb_transaction_impl : public Rdb_transaction {
     global_stats.queries[QUERIES_RANGE].inc();
     if (use_locking_iterator) {
       locking_iter_created();
-      return GetLockingIterator(m_rocksdb_tx, options, column_family, is_rev_cf);
+      return GetLockingIterator(m_rocksdb_tx, options, column_family,
+                                is_rev_cf, &m_lock_count);
     }
     else
       return m_rocksdb_tx->GetIterator(options, column_family);
