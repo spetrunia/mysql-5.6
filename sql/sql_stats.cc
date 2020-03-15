@@ -295,6 +295,7 @@ static std::string sql_cmd_type(enum_sql_command sql_command)
     case SQLCOM_END:
       return "OTHER";
   }
+      return "OTHER";
 }
 
 /*

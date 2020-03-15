@@ -27,6 +27,10 @@ INCLUDE_DIRECTORIES(
   ${CMAKE_SOURCE_DIR}/rocksdb/utilities/transactions/range_locking/portability
 )
 
+INCLUDE_DIRECTORIES(
+  /home/psergey/userspace-rcu-dist/include
+)
+
 # This is a strong requirement coming from RocksDB. No conditional checks here.
 ADD_DEFINITIONS(-DROCKSDB_PLATFORM_POSIX -DROCKSDB_LIB_IO_POSIX)
 
@@ -93,6 +97,14 @@ ELSE()
 ENDIF()
 
 SET(rocksdb_static_libs )
+
+FIND_LIBRARY(
+  URCU_LIBRARY
+  NAMES liburcu${PIC_EXT}.a urcu
+  HINTS /home/psergey/userspace-rcu-dist/lib
+  )
+
+SET(rocksdb_static_libs ${rocksdb_static_libs} ${URCU_LIBRARY})
 
 IF (WITH_JEMALLOC)
   FIND_LIBRARY(JEMALLOC_LIBRARY

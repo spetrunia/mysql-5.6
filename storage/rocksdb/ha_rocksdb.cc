@@ -85,6 +85,7 @@
 
 #include "./rdb_locking_iter.h"
 
+#include <urcu.h>
 
 // Internal MySQL APIs not exposed in any header.
 extern "C" {
@@ -3736,11 +3737,12 @@ class Rdb_transaction_impl : public Rdb_transaction {
       : Rdb_transaction(thd), m_rocksdb_tx(nullptr) {
     // Create a notifier that can be called when a snapshot gets generated.
     m_notifier = std::make_shared<Rdb_snapshot_notifier>(this);
+    rcu_register_thread(); //psergey2: register in URCU
   }
 
   virtual ~Rdb_transaction_impl() override {
     rollback();
-
+    rcu_unregister_thread(); //psergey2
     // Theoretically the notifier could outlive the Rdb_transaction_impl
     // (because of the shared_ptr), so let it know it can't reference
     // the transaction anymore.
@@ -4041,6 +4043,7 @@ static Rdb_transaction *get_or_create_tx(THD *const thd) {
 
 static int rocksdb_close_connection(handlerton *const hton, THD *const thd) {
   Rdb_transaction *&tx = get_tx_from_thd(thd);
+  // psergey-todo: URCU close
   if (tx != nullptr) {
     bool is_critical_error;
     int rc = tx->finish_bulk_load(&is_critical_error, false);
@@ -5323,6 +5326,8 @@ static int rocksdb_init_func(void *const p) {
       exit(0);
     }
   }
+
+  rcu_init(); //psergey2
 
   // Validate the assumption about the size of ROCKSDB_SIZEOF_HIDDEN_PK_COLUMN.
   static_assert(sizeof(longlong) == 8, "Assuming that longlong is 8 bytes.");

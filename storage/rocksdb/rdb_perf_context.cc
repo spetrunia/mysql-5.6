@@ -93,7 +93,25 @@ std::string rdb_pc_stat_types[] = {
     "IO_WRITE_NANOS",
     "IO_READ_NANOS",
     "IO_RANGE_SYNC_NANOS",
-    "IO_LOGGER_NANOS"};
+    "IO_LOGGER_NANOS",
+    
+    "RANGELOCK_REMOVE",
+    "RANGELOCK_REMOVE_RCU",
+    "RANGELOCK_ACQUIRE",
+    "RANGELOCK_ACQUIRE_RCU",
+
+    "RANGELOCK_SYNCHRONIZE_RCU",
+    "RANGELOCK_ACQUIRE_RCU_BUSY1",
+    "RANGELOCK_ACQUIRE_RCU_RETRY",
+
+    "RANGELOCK_RCU_ENABLED",
+    "RANGELOCK_RARE_EVENT",
+
+    "RANGELOCK_EXTRA_COUNTER1",
+    "RANGELOCK_EXTRA_COUNTER2",
+    "RANGELOCK_EXTRA_COUNTER3"
+    };
+
 
 #define IO_PERF_RECORD(_field_)                                       \
   do {                                                                \
@@ -171,6 +189,22 @@ static void harvest_diffs(Rdb_atomic_perf_counters *const counters) {
   IO_STAT_RECORD(read_nanos);
   IO_STAT_RECORD(range_sync_nanos);
   IO_STAT_RECORD(logger_nanos);
+
+  IO_PERF_RECORD(rangelock_remove);
+  IO_PERF_RECORD(rangelock_remove_rcu);
+  IO_PERF_RECORD(rangelock_acquire);
+  IO_PERF_RECORD(rangelock_acquire_rcu);
+
+  IO_PERF_RECORD(rangelock_synchronize_rcu);
+  IO_PERF_RECORD(rangelock_acquire_rcu_busy1);
+  IO_PERF_RECORD(rangelock_acquire_rcu_retry);
+
+  IO_PERF_RECORD(rangelock_rcu_enabled);
+  IO_PERF_RECORD(rangelock_rare_event);
+
+  IO_PERF_RECORD(rangelock_extra_counter1);
+  IO_PERF_RECORD(rangelock_extra_counter2);
+  IO_PERF_RECORD(rangelock_extra_counter3);
 }
 
 #undef IO_PERF_DIFF
