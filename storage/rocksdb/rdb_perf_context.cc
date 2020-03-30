@@ -107,9 +107,9 @@ std::string rdb_pc_stat_types[] = {
     "RANGELOCK_RCU_ENABLED",
     "RANGELOCK_RARE_EVENT",
 
-    "RANGELOCK_EXTRA_COUNTER1",
-    "RANGELOCK_EXTRA_COUNTER2",
-    "RANGELOCK_EXTRA_COUNTER3"
+    "RANGELOCK_DISABLE_RCU_HIT_ROOT",
+    "RANGELOCK_DISABLE_RCU_MAYBE_REBALANCE",
+    "RANGELOCK_DISABLE_RCU_REBALANCE"
     };
 
 
@@ -202,9 +202,9 @@ static void harvest_diffs(Rdb_atomic_perf_counters *const counters) {
   IO_PERF_RECORD(rangelock_rcu_enabled);
   IO_PERF_RECORD(rangelock_rare_event);
 
-  IO_PERF_RECORD(rangelock_extra_counter1);
-  IO_PERF_RECORD(rangelock_extra_counter2);
-  IO_PERF_RECORD(rangelock_extra_counter3);
+  IO_PERF_RECORD(rangelock_disable_rcu_hit_root);
+  IO_PERF_RECORD(rangelock_disable_rcu_maybe_rebalance);
+  IO_PERF_RECORD(rangelock_disable_rcu_rebalance);
 }
 
 #undef IO_PERF_DIFF
