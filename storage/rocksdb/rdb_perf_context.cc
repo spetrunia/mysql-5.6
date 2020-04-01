@@ -165,9 +165,6 @@ static void harvest_diffs(Rdb_atomic_perf_counters *const counters) {
   IO_PERF_RECORD(key_lock_wait_time);
   IO_PERF_RECORD(key_lock_wait_count);
 
-  IO_PERF_RECORD(lock_acquire_count);
-  IO_PERF_RECORD(lock_release_count);
-
   IO_STAT_RECORD(thread_pool_id);
   IO_STAT_RECORD(bytes_written);
   IO_STAT_RECORD(bytes_read);
@@ -177,6 +174,9 @@ static void harvest_diffs(Rdb_atomic_perf_counters *const counters) {
   IO_STAT_RECORD(read_nanos);
   IO_STAT_RECORD(range_sync_nanos);
   IO_STAT_RECORD(logger_nanos);
+  IO_PERF_RECORD(lock_acquire_count);
+  IO_PERF_RECORD(lock_release_count);
+
 }
 
 #undef IO_PERF_DIFF
