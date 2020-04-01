@@ -93,7 +93,10 @@ std::string rdb_pc_stat_types[] = {
     "IO_WRITE_NANOS",
     "IO_READ_NANOS",
     "IO_RANGE_SYNC_NANOS",
-    "IO_LOGGER_NANOS"};
+    "IO_LOGGER_NANOS",
+    "LOCK_ACQUIRE_COUNT",
+    "LOCK_RELEASE_COUNT"
+    };
 
 #define IO_PERF_RECORD(_field_)                                       \
   do {                                                                \
@@ -161,6 +164,9 @@ static void harvest_diffs(Rdb_atomic_perf_counters *const counters) {
   IO_PERF_RECORD(bloom_sst_miss_count);
   IO_PERF_RECORD(key_lock_wait_time);
   IO_PERF_RECORD(key_lock_wait_count);
+
+  IO_PERF_RECORD(lock_acquire_count);
+  IO_PERF_RECORD(lock_release_count);
 
   IO_STAT_RECORD(thread_pool_id);
   IO_STAT_RECORD(bytes_written);
