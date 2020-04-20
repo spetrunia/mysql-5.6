@@ -135,9 +135,9 @@ COUNT(*)
 COMMIT;
 # When transaction is committed, fail on duplicate key
 INSERT INTO t1 VALUES (40, 40, 40, 40, 40, 40, 40, 40);
-Got one of the listed errors
+ERROR 40001: Deadlock found when trying to get lock; try restarting transaction (snapshot conflict)
 INSERT INTO t1 VALUES (41, 40, 40, 40, 40, 40, 40, 40);
-ERROR 23000: Duplicate entry '40-40-40' for key 'id2_2'
+ERROR 40001: Deadlock found when trying to get lock; try restarting transaction (snapshot conflict)
 ROLLBACK;
 SELECT * FROM t1;
 id1	id2	id3	id4	id5	value1	value2	value3

@@ -9850,9 +9850,36 @@ int ha_rocksdb::check_and_lock_sk(const uint key_id,
   */
   *found = !read_key_exact(kd, iter, all_parts_used, new_slice,
                            row_info.tx->m_snapshot_timestamp);
+
+  int retval= HA_EXIT_SUCCESS;
+  if (*found) {
+    /*
+      There is a duplicate row, but is it visible to the current transaction?
+      If it is not, a query like INSERT ... ON DUPLICATE KEY UPDATE will fail
+      when it can't read the duplicate row.
+
+      To avoid this, perform "Snapshot Checking" - check if the duplicate has
+      seqno that is not visible to the current transaction.
+
+      RocksDB API doesn't have a call for this. The closest is to call
+      get_for_update(..., value=nullptr)
+      which will get a lock and do Snapshot Checking.
+      Acquiring the lock doesn't matter (we've acquired the lock on the
+      secondary key already), so this call will only do Snapshot Checking:
+    */
+    rocksdb::Slice found_key= iter->key();
+    const rocksdb::Status s =
+        get_for_update(row_info.tx, kd.get_cf(), found_key, nullptr);
+
+    if (!s.ok()) {
+      DBUG_ASSERT(!s.IsNotFound());
+      retval = row_info.tx->set_status_error(table->in_use, s, kd, m_tbl_def,
+                                             m_table_handler);
+    }
+  }
   delete iter;
 
-  return HA_EXIT_SUCCESS;
+  return retval;
 }
 
 /**
@@ -9883,6 +9910,7 @@ int ha_rocksdb::check_uniqueness_and_lock(
         rc = HA_EXIT_SUCCESS;
       } else {
         rc = check_and_lock_unique_pk(key_id, row_info, &found);
+        DEBUG_SYNC(ha_thd(), "rocksdb.after_unique_pk_check");
       }
     } else {
       rc = check_and_lock_sk(key_id, row_info, &found);

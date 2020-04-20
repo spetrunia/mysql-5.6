@@ -179,9 +179,9 @@ COMMIT;
 
 connection con2;
 --echo # When transaction is committed, fail on duplicate key
---error ER_DUP_ENTRY,ER_LOCK_DEADLOCK
+--error ER_LOCK_DEADLOCK
 INSERT INTO t1 VALUES (40, 40, 40, 40, 40, 40, 40, 40);
---error ER_DUP_ENTRY
+--error ER_LOCK_DEADLOCK
 INSERT INTO t1 VALUES (41, 40, 40, 40, 40, 40, 40, 40);
 
 ROLLBACK;
