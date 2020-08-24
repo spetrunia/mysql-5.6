@@ -11337,11 +11337,13 @@ int ha_rocksdb::delete_row(const uchar *const buf) {
       /*
         For point locking, Deleting on secondary key doesn't need any locks.
         Range locking must set locks
+        (TODO: don't get the lock here if we've got it in key_info->flags &
+        HA_NOSAME branch above?)
       */
       if (rocksdb_use_range_locking) {
         auto s= tx->lock_singlepoint_range(kd.get_cf(), secondary_key_slice);
         if (!s.ok()) {
-          return (tx->set_status_error(table->in_use, s, kd, m_tbl_def,
+          DBUG_RETURN(tx->set_status_error(table->in_use, s, kd, m_tbl_def,
                                        m_table_handler));
         }
       }
