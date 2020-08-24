@@ -329,8 +329,8 @@ class ha_rocksdb : public my_core::handler {
                            const bool use_all_keys, const uint eq_cond_len,
                            bool use_locking_iterator)
       MY_ATTRIBUTE((__nonnull__));
-  //psergey:
-  void set_range_lock(Rdb_transaction *tx,
+
+  int set_range_lock(Rdb_transaction *tx,
                       const Rdb_key_def &kd, 
                       const enum ha_rkey_function &find_flag,
                       const rocksdb::Slice &slice,
