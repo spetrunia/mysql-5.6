@@ -40,8 +40,9 @@ ELSE()
 
   # Statically include all RocksDB source
   SET(ROCKSDB_SOURCES
-  ${CMAKE_SOURCE_DIR}/rocksdb/utilities/transactions/range_locking
-  ${CMAKE_SOURCE_DIR}/rocksdb/utilities/transactions/range_locking/portability
+    ${ROCKSDB_LIB_SOURCES}
+    ${CMAKE_SOURCE_DIR}/rocksdb/utilities/transactions/range_locking
+    ${CMAKE_SOURCE_DIR}/rocksdb/utilities/transactions/range_locking/portability
   )
 ENDIF()
 
@@ -49,6 +50,8 @@ INCLUDE_DIRECTORIES(
   ${ROCKSDB_ROOT}
   ${ROCKSDB_ROOT}/include
   ${ROCKSDB_ROOT}/third-party/gtest-1.8.1/fused-src
+  ${CMAKE_SOURCE_DIR}/rocksdb/utilities/transactions/range_locking
+  ${CMAKE_SOURCE_DIR}/rocksdb/utilities/transactions/range_locking/portability
 )
 
 IF(UNIX)
@@ -80,8 +83,6 @@ else()
   MESSAGE(SEND_ERROR "The compiler failed the check for ROCKSDB_SUPPORT_THREAD_LOCAL. "
                      "MyRocks requires that feature.")
 endif()
-
-
 
 SET(ROCKSDB_SOURCES
   ${ROCKSDB_SOURCES}
