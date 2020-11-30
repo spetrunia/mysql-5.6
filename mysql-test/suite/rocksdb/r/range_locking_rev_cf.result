@@ -99,12 +99,12 @@ pk	a
 10	10
 # select * from information_schema.rocksdb_locks; # With replacements by select_from_is_rowlocks.inc
 COLUMN_FAMILY_ID	TRANSACTION_ID	KEY	mode
-$cf_id	$trx_id	00${indexnr}8000000a	X
+$cf_id	$trx_id	${indexnr}8000000a	X
 delete from t1 where pk between 25 and 40;
 # select * from information_schema.rocksdb_locks; # With replacements by select_from_is_rowlocks.inc
 COLUMN_FAMILY_ID	TRANSACTION_ID	KEY	mode
-$cf_id	$trx_id	00${indexnr}8000000a	X
-$cf_id	$trx_id	00${indexnr}80000028 - 01${indexnr}80000019	X
+$cf_id	$trx_id	${indexnr}8000000a	X
+$cf_id	$trx_id	${indexnr}80000028-${indexnr}80000019:1	X
 rollback;
 begin;
 # The following will show a range lock on 2-9 and also a point lock on 10.
@@ -113,7 +113,7 @@ select * from t1 where pk between 2 and 9 for update;
 pk	a
 # select * from information_schema.rocksdb_locks; # With replacements by select_from_is_rowlocks.inc
 COLUMN_FAMILY_ID	TRANSACTION_ID	KEY	mode
-$cf_id	$trx_id	00${indexnr}80000009 - 01${indexnr}80000002	X
+$cf_id	$trx_id	${indexnr}80000009-${indexnr}80000002:1	X
 rollback;
 drop table t1;
 connection con1;
@@ -400,7 +400,7 @@ pk1	pk2	a
 3	0	30
 # select * from information_schema.rocksdb_locks; # With replacements by select_from_is_rowlocks.inc
 COLUMN_FAMILY_ID	TRANSACTION_ID	KEY	mode
-$cf_id	$trx_id	00${indexnr}80000003 - 01${indexnr}80000003	X
+$cf_id	$trx_id	${indexnr}80000003-${indexnr}80000003:1	X
 rollback;
 #
 # Test range locking for ranges with HA_READ_PREFIX_LAST_OR_PREV
@@ -427,7 +427,7 @@ pk1	pk2	a
 4	5	45
 # select * from information_schema.rocksdb_locks; # With replacements by select_from_is_rowlocks.inc
 COLUMN_FAMILY_ID	TRANSACTION_ID	KEY	mode
-$cf_id	$trx_id	00${indexnr}8000000480000008 - 01${indexnr}8000000480000005	X
+$cf_id	$trx_id	${indexnr}8000000480000008-${indexnr}8000000480000005:1	X
 rollback;
 connection con1;
 rollback;
@@ -462,7 +462,7 @@ pk	a
 8	8
 # select * from information_schema.rocksdb_locks; # With replacements by select_from_is_rowlocks.inc
 COLUMN_FAMILY_ID	TRANSACTION_ID	KEY	mode
-$cf_id	$trx_id	00${indexnr} - 00${indexnr}8000000a	X
+$cf_id	$trx_id	${indexnr}-${indexnr}8000000a	X
 rollback;
 begin;
 select * from t1 where pk>1990 order by pk desc limit 10 for update;
@@ -473,7 +473,7 @@ pk	a
 1992	1992
 # select * from information_schema.rocksdb_locks; # With replacements by select_from_is_rowlocks.inc
 COLUMN_FAMILY_ID	TRANSACTION_ID	KEY	mode
-$cf_id	$trx_id	00${indexnr}800007c6 - 00${indexnr+1}	X
+$cf_id	$trx_id	${indexnr}800007c6-${indexnr+1}	X
 rollback;
 connection con1;
 rollback;

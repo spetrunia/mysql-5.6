@@ -208,7 +208,7 @@ pk	a
 #  The below will lock from pk=1007 (0x3ef) till the end of the table:
 # select * from information_schema.rocksdb_locks; # With replacements by select_from_is_rowlocks.inc
 COLUMN_FAMILY_ID	TRANSACTION_ID	KEY	mode
-$cf_id	$trx_id	00${indexnr}800003ef - 00${indexnr+1}	X
+$cf_id	$trx_id	${indexnr}800003ef-${indexnr+1}	X
 rollback;
 begin;
 select * from t1 where pk <1007 order by pk desc limit 2 for update;
@@ -217,7 +217,7 @@ pk	a
 1001	1001
 # select * from information_schema.rocksdb_locks; # With replacements by select_from_is_rowlocks.inc
 COLUMN_FAMILY_ID	TRANSACTION_ID	KEY	mode
-$cf_id	$trx_id	00${indexnr}800003e9 - 00${indexnr}800003ef	X
+$cf_id	$trx_id	${indexnr}800003e9-${indexnr}800003ef	X
 connection con1;
 rollback;
 connection default;
