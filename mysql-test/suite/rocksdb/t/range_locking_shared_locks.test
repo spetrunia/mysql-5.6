@@ -104,7 +104,7 @@ let $TRX2_ID=`select transaction_id from information_schema.rocksdb_trx where th
 
 connection default;
 begin;
---replace_column 9 #
+--replace_column 10 #
 explain
 select * from t1 where a between 2 and 5 lock in share mode;
 select * from t1 where a between 2 and 5 lock in share mode;
@@ -177,7 +177,7 @@ set @save_mlm= @@rocksdb_max_lock_memory;
 set @cur_mem_usage= (select 
                        variable_value 
                      from 
-                       information_schema.GLOBAL_STATUS 
+                       performance_schema.global_status 
                      where 
                        variable_name='rocksdb_locktree_current_lock_memory');
 

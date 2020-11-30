@@ -34,8 +34,10 @@ $cf_id	$trx_id	00${indexnr}8000000b	X
 #
 explain
 select * from t1 where pk>=500 order by pk limit 3 for update;
-id	select_type	table	type	possible_keys	key	key_len	ref	rows	Extra
-1	SIMPLE	t1	range	PRIMARY	PRIMARY	4	NULL	#	Using where
+id	select_type	table	partitions	type	possible_keys	key	key_len	ref	rows	filtered	Extra
+1	SIMPLE	t1	NULL	range	PRIMARY	PRIMARY	4	NULL	#	100.00	Using where
+Warnings:
+Note	1003	/* select#1 */ select `test`.`t1`.`pk` AS `pk`,`test`.`t1`.`a` AS `a` from `test`.`t1` where (`test`.`t1`.`pk` >= 500) order by `test`.`t1`.`pk` limit 3
 select * from t1 where pk>=500 order by pk limit 3 for update;
 pk	a
 500	500
@@ -52,8 +54,10 @@ pk	a
 11	11
 explain
 select * from t1 order by pk limit 3 for update;
-id	select_type	table	type	possible_keys	key	key_len	ref	rows	Extra
-1	SIMPLE	t1	index	NULL	PRIMARY	4	NULL	3	NULL
+id	select_type	table	partitions	type	possible_keys	key	key_len	ref	rows	filtered	Extra
+1	SIMPLE	t1	NULL	index	NULL	PRIMARY	4	NULL	3	100.00	NULL
+Warnings:
+Note	1003	/* select#1 */ select `test`.`t1`.`pk` AS `pk`,`test`.`t1`.`a` AS `a` from `test`.`t1` order by `test`.`t1`.`pk` limit 3
 select * from t1 order by pk limit 3 for update;
 pk	a
 0	0
@@ -104,8 +108,10 @@ pk	a
 # right before the range we are about to lock (nothing)
 explain 
 select * from t1 where pk >=5 order by pk limit 3 for update;
-id	select_type	table	type	possible_keys	key	key_len	ref	rows	Extra
-1	SIMPLE	t1	range	PRIMARY	PRIMARY	4	NULL	#	Using where
+id	select_type	table	partitions	type	possible_keys	key	key_len	ref	rows	filtered	Extra
+1	SIMPLE	t1	NULL	range	PRIMARY	PRIMARY	4	NULL	#	100.00	Using where
+Warnings:
+Note	1003	/* select#1 */ select `test`.`t1`.`pk` AS `pk`,`test`.`t1`.`a` AS `a` from `test`.`t1` where (`test`.`t1`.`pk` >= 5) order by `test`.`t1`.`pk` limit 3
 begin;
 set debug_sync='rocksdb.locking_iter_scan SIGNAL about_to_lock_range WAIT_FOR spoiler_inserted';
 select * from t1 where pk >=5 order by pk limit 3 for update;
@@ -126,8 +132,10 @@ delete from t1 where pk=3;
 # the range we are locking
 explain 
 select * from t1 where pk >=5 order by pk limit 1 for update;
-id	select_type	table	type	possible_keys	key	key_len	ref	rows	Extra
-1	SIMPLE	t1	range	PRIMARY	PRIMARY	4	NULL	#	Using where
+id	select_type	table	partitions	type	possible_keys	key	key_len	ref	rows	filtered	Extra
+1	SIMPLE	t1	NULL	range	PRIMARY	PRIMARY	4	NULL	#	100.00	Using where
+Warnings:
+Note	1003	/* select#1 */ select `test`.`t1`.`pk` AS `pk`,`test`.`t1`.`a` AS `a` from `test`.`t1` where (`test`.`t1`.`pk` >= 5) order by `test`.`t1`.`pk` limit 1
 begin;
 set debug_sync='rocksdb.locking_iter_scan SIGNAL about_to_lock_range WAIT_FOR spoiler_inserted';
 select * from t1 where pk >=5 order by pk limit 1 for update;

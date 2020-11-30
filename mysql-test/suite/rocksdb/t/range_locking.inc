@@ -204,7 +204,7 @@ insert into t1 select  3, a, 1234 from t0;
 connect (con1,localhost,root,,);
 connection con1;
 begin;
---replace_column 9 #
+--replace_column 10 #
 explain
 select * from t1 where kp1=2 for update;
 select * from t1 where kp1=2 for update;
@@ -458,7 +458,7 @@ insert into t1 values (0x1112222,0x1112222,0);
 connection default;
 begin;
 --echo # Should use ref access w/o filesort:
---replace_column 9 #
+--replace_column 10 #
 explain
 select * from t1
 where pk1=3
@@ -480,7 +480,7 @@ rollback;
 
 begin;
 --echo # Should use range access with 2 keyparts and w/o filesort:
---replace_column 9 #
+--replace_column 10 #
 explain 
 select * from t1 
 where pk1=4 and pk2 between 5 and 8 

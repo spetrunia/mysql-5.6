@@ -40,7 +40,7 @@ let $select_from_is_rowlocks_current_trx_only=1;
 --echo #
 --echo #  SeekForUpdate Test #1: A query with type=range (without upper bound) and LIMIT 
 --echo #
---replace_column 9 #
+--replace_column 10 #
 explain
 select * from t1 where pk>=500 order by pk limit 3 for update;
 select * from t1 where pk>=500 order by pk limit 3 for update;
@@ -92,7 +92,7 @@ select * from t1 where pk<10;
 --echo # Test what happens when another transaction commits a row
 --echo # right before the range we are about to lock (nothing)
 
---replace_column 9 #
+--replace_column 10 #
 explain 
 select * from t1 where pk >=5 order by pk limit 3 for update;
 
@@ -117,7 +117,7 @@ delete from t1 where pk=3;
 --echo # Now, repeat the test but let the other transaction insert the row into
 --echo # the range we are locking
 
---replace_column 9 #
+--replace_column 10 #
 explain 
 select * from t1 where pk >=5 order by pk limit 1 for update;
 
