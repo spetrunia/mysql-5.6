@@ -4907,8 +4907,9 @@ class Rdb_snapshot_status : public Rdb_tx_list_walker {
            "=========================================\n";
   }
 
+  template<class PathStruct>
   static Rdb_deadlock_info::Rdb_dl_trx_info get_dl_txn_info(
-      const rocksdb::DeadlockInfo &txn, const GL_INDEX_ID &gl_index_id) {
+      const PathStruct &txn, const GL_INDEX_ID &gl_index_id) {
     Rdb_deadlock_info::Rdb_dl_trx_info txn_data;
 
     txn_data.trx_id = txn.m_txn_id;
@@ -4933,23 +4934,48 @@ class Rdb_snapshot_status : public Rdb_tx_list_walker {
                            ? cfh->GetName()
                            : "NOT FOUND; CF_ID: " + std::to_string(txn.m_cf_id);
 
-    txn_data.waiting_key =
-        rdb_hexdump(txn.m_waiting_key.c_str(), txn.m_waiting_key.length());
+    txn_data.waiting_key = format_wait_key(txn);
 
     txn_data.exclusive_lock = txn.m_exclusive;
 
     return txn_data;
   }
 
+  /*
+    Unify Range and Point-based locking: index_key is the index that the lock
+    is using.
+  */
+  static const std::string& get_key_for_indexnr(
+      const rocksdb::DeadlockInfo& info) {
+    return info.m_waiting_key;
+  }
+  static const std::string& get_key_for_indexnr(
+      const rocksdb::RangeDeadlockInfo& info) {
+    // Range locks do not span indexes, so take the left bound
+    return info.m_start.slice;
+  }
+
+  /*
+    Unify Range and Point-based locking: Print the locked key (or range) in hex
+  */
+  static std::string format_wait_key(const rocksdb::DeadlockInfo& info) {
+    return rdb_hexdump(info.m_waiting_key.c_str(), info.m_waiting_key.length());
+  }
+
+  static std::string format_wait_key(const rocksdb::RangeDeadlockInfo& info) {
+    return rdb_hexdump_range(info.m_start, info.m_end);
+  }
+
+  template<class PathStruct>
   static Rdb_deadlock_info get_dl_path_trx_info(
-      const rocksdb::DeadlockPath &path_entry) {
+      const PathStruct &path_entry) {
     Rdb_deadlock_info deadlock_info;
 
     for (auto it = path_entry.path.begin(); it != path_entry.path.end(); it++) {
       const auto &txn = *it;
       const GL_INDEX_ID gl_index_id = {
           txn.m_cf_id, rdb_netbuf_to_uint32(reinterpret_cast<const uchar *>(
-                           txn.m_waiting_key.c_str()))};
+                           get_key_for_indexnr(txn).c_str()))};
       deadlock_info.path.push_back(get_dl_txn_info(txn, gl_index_id));
     }
     DBUG_ASSERT_IFF(path_entry.limit_exceeded, path_entry.path.empty());
@@ -4992,8 +5018,8 @@ class Rdb_snapshot_status : public Rdb_tx_list_walker {
     }
   }
 
-  void populate_deadlock_buffer() {
-    auto dlock_buffer = rdb->GetDeadlockInfoBuffer();
+  template<class PathStruct>
+  void populate_deadlock_buffer_tmpl(PathStruct &dlock_buffer) {
     m_data += "----------LATEST DETECTED DEADLOCKS----------\n";
 
     for (const auto &path_entry : dlock_buffer) {
@@ -5033,12 +5059,32 @@ class Rdb_snapshot_status : public Rdb_tx_list_walker {
     }
   }
 
+  void populate_deadlock_buffer() {
+    if (range_lock_mgr) {
+      auto dlock_buffer = range_lock_mgr->GetRangeDeadlockInfoBuffer();
+      populate_deadlock_buffer_tmpl(dlock_buffer);
+    } else {
+      auto dlock_buffer = rdb->GetDeadlockInfoBuffer();
+      populate_deadlock_buffer_tmpl(dlock_buffer);
+    }
+  }
+
   std::vector<Rdb_deadlock_info> get_deadlock_info() {
     std::vector<Rdb_deadlock_info> deadlock_info;
-    auto dlock_buffer = rdb->GetDeadlockInfoBuffer();
-    for (const auto &path_entry : dlock_buffer) {
-      if (!path_entry.limit_exceeded) {
-        deadlock_info.push_back(get_dl_path_trx_info(path_entry));
+
+    if (range_lock_mgr) {
+      auto dlock_buffer = range_lock_mgr->GetRangeDeadlockInfoBuffer();
+      for (const auto &path_entry : dlock_buffer) {
+        if (!path_entry.limit_exceeded) {
+          deadlock_info.push_back(get_dl_path_trx_info(path_entry));
+        }
+      }
+    } else {
+      auto dlock_buffer = rdb->GetDeadlockInfoBuffer();
+      for (const auto &path_entry : dlock_buffer) {
+        if (!path_entry.limit_exceeded) {
+          deadlock_info.push_back(get_dl_path_trx_info(path_entry));
+        }
       }
     }
     return deadlock_info;
@@ -15949,7 +15995,13 @@ void rocksdb_set_max_latest_deadlocks(
   const uint32_t new_val = *static_cast<const uint32_t *>(save);
   if (rocksdb_max_latest_deadlocks != new_val) {
     rocksdb_max_latest_deadlocks = new_val;
-    rdb->SetDeadlockInfoBufferSize(rocksdb_max_latest_deadlocks);
+    if (range_lock_mgr) {
+      auto n= rocksdb_max_latest_deadlocks;
+      range_lock_mgr->SetRangeDeadlockInfoBufferSize(n);
+    }
+    else
+      rdb->SetDeadlockInfoBufferSize(rocksdb_max_latest_deadlocks);
+
   }
   RDB_MUTEX_UNLOCK_CHECK(rdb_sysvars_mutex);
 }

@@ -1751,6 +1751,7 @@ static ST_FIELD_INFO rdb_i_s_lock_info_fields_info[] = {
     ROCKSDB_FIELD_INFO("MODE", 32, MYSQL_TYPE_STRING, 0),
     ROCKSDB_FIELD_INFO_END};
 
+
 /* Fill the information_schema.rocksdb_locks virtual table */
 static int rdb_i_s_lock_info_fill_table(
     my_core::THD *const thd, my_core::TABLE_LIST *const tables,
@@ -1780,33 +1781,8 @@ static int rdb_i_s_lock_info_fill_table(
       const uint32_t cf_id = lock.first;
       const auto &range_lock_info = lock.second;
 
-      std::string key_hexstr;
-      // For keys: :0 keys should look like point keys
-      if (!range_lock_info.start.inf_suffix &&
-          !range_lock_info.end.inf_suffix &&
-          (range_lock_info.start.slice ==
-           range_lock_info.end.slice)) {
-        // Ok the lock is held on a single-point range.
-        // Show it like a single-point key
-        key_hexstr = rdb_hexdump(range_lock_info.start.slice.c_str(),
-                                 range_lock_info.start.slice.length(),
-                                 FN_REFLEN);
-      } else {
-        key_hexstr = rdb_hexdump(range_lock_info.start.slice.c_str(),
-                                 range_lock_info.start.slice.length(),
-                                 FN_REFLEN);
-        if (range_lock_info.start.inf_suffix)
-          key_hexstr.append(":1");
-
-        key_hexstr.append("-");
-
-        std::string key2 = rdb_hexdump(range_lock_info.end.slice.c_str(),
-                                       range_lock_info.end.slice.length(),
-                                       FN_REFLEN);
-        if (range_lock_info.end.inf_suffix)
-          key2.append(":1");
-        key_hexstr.append(key2);
-      }
+      std::string key_hexstr = rdb_hexdump_range(range_lock_info.start,
+                                                 range_lock_info.end);
 
       for (const auto &id : range_lock_info.ids) {
         tables->table->field[RDB_LOCKS_FIELD::COLUMN_FAMILY_ID]->store(cf_id,
