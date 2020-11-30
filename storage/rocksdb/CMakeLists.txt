@@ -55,8 +55,8 @@ INCLUDE_DIRECTORIES(
   ${ROCKSDB_ROOT}
   ${ROCKSDB_ROOT}/include
   ${ROCKSDB_ROOT}/third-party/gtest-1.8.1/fused-src
+  ${CMAKE_SOURCE_DIR}/rocksdb/utilities/transactions/lock/range/range_tree/
 )
-
 
 # Suppress warnings for all compilers
 MY_CHECK_CXX_COMPILER_FLAG("-Wno-shadow-field" HAVE_NO_SHADOW_FIELD)
@@ -123,10 +123,15 @@ CHECK_CXX_SOURCE_COMPILES("
 #endif
 int main() {
   static __thread int tls;
+  tls=0;
+  return tls;
 }
 " HAVE_THREAD_LOCAL)
 if(HAVE_THREAD_LOCAL)
   ADD_DEFINITIONS(-DROCKSDB_SUPPORT_THREAD_LOCAL)
+else()
+  MESSAGE(SEND_ERROR "The compiler failed the check for ROCKSDB_SUPPORT_THREAD_LOCAL. "
+                     "MyRocks requires that feature.")
 endif()
 
 SET(ROCKSDB_SOURCES
@@ -134,6 +139,7 @@ SET(ROCKSDB_SOURCES
   ha_rocksdb.cc ha_rocksdb.h ha_rocksdb_proto.h
   logger.h
   rdb_datadic.cc rdb_datadic.h
+  rdb_locking_iter.cc rdb_locking_iter.h
   rdb_cf_options.cc rdb_cf_options.h
   rdb_cf_manager.cc rdb_cf_manager.h
   rdb_converter.cc rdb_converter.h

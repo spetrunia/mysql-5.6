@@ -346,8 +346,18 @@ class ha_rocksdb : public my_core::handler {
                                   rocksdb::Slice *lower_bound_slice,
                                   rocksdb::Slice *upper_bound_slice);
   void setup_scan_iterator(const Rdb_key_def &kd, rocksdb::Slice *slice,
-                           const bool use_all_keys, const uint eq_cond_len)
+                           const bool use_all_keys, const uint eq_cond_len,
+                           bool use_locking_iterator)
       MY_ATTRIBUTE((__nonnull__));
+
+  int set_range_lock(Rdb_transaction *tx,
+                      const Rdb_key_def &kd, 
+                      const enum ha_rkey_function &find_flag,
+                      const rocksdb::Slice &slice,
+                      const key_range *const end_key,
+                      bool flip_rev_cf,
+                      bool *use_locking_iterator);
+
   void release_scan_iterator(void);
 
   rocksdb::Status get_for_update(Rdb_transaction *const tx,
@@ -1061,6 +1071,8 @@ class ha_rocksdb : public my_core::handler {
   /* Flags tracking if we are inside different replication operation */
   bool m_in_rpl_delete_rows;
   bool m_in_rpl_update_rows;
+
+  int iter_status_to_retval(rocksdb::Iterator *it, const Rdb_key_def &kd, int not_found_code);
 };
 
 /*
