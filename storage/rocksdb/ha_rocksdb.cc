@@ -767,7 +767,7 @@ static bool rocksdb_skip_locks_if_skip_unique_check = false;
 static ulonglong rocksdb_max_lock_memory;
 
 static bool rocksdb_use_range_locking = 0;
-static std::shared_ptr<rocksdb::RangeLockMgrHandle> range_lock_mgr;
+std::shared_ptr<rocksdb::RangeLockManagerHandle> range_lock_mgr;
 
 std::atomic<uint64_t> rocksdb_row_lock_deadlocks(0);
 std::atomic<uint64_t> rocksdb_row_lock_wait_timeouts(0);
@@ -3604,7 +3604,7 @@ class Rdb_transaction_impl : public Rdb_transaction {
   rocksdb::Status lock_range(rocksdb::ColumnFamilyHandle *const cf,
                              const rocksdb::Endpoint &start_endp,
                              const rocksdb::Endpoint &end_endp) override {
-    ++m_lock_count;
+    ++m_row_lock_count;
     return m_rocksdb_tx->GetRangeLock(cf, start_endp, end_endp);
   }
  private:
@@ -3846,7 +3846,7 @@ class Rdb_transaction_impl : public Rdb_transaction {
     if (use_locking_iterator) {
       locking_iter_created();
       return GetLockingIterator(m_rocksdb_tx, options, column_family,
-                                is_rev_cf, &m_lock_count);
+                                is_rev_cf, &m_row_lock_count);
     }
     else
       return m_rocksdb_tx->GetIterator(options, column_family);
@@ -6352,7 +6352,7 @@ static int rocksdb_init_internal(void *const p) {
 
   if (range_lock_mgr)
   {
-    range_lock_mgr->set_max_lock_memory(rocksdb_max_lock_memory);
+    range_lock_mgr->SetMaxLockMemory(rocksdb_max_lock_memory);
     sql_print_information("RocksDB: USING NEW RANGE LOCKING");
     sql_print_information("RocksDB: Max lock memory=%llu", rocksdb_max_lock_memory);
   }
@@ -15929,7 +15929,7 @@ void rocksdb_set_max_lock_memory(THD *thd, struct SYS_VAR*,
                                  void* /*var_ptr*/, const void *save) {
   const uint64_t new_val = *static_cast<const uint64_t *>(save);
   if (rocksdb_max_lock_memory != new_val) {
-    if (range_lock_mgr->set_max_lock_memory(new_val)) {
+    if (range_lock_mgr->SetMaxLockMemory(new_val)) {
       /* NO_LINT_DEBUG */
       sql_print_warning("MyRocks: failed to set max_lock_memory");
       push_warning_printf(thd, Sql_condition::SL_WARNING,

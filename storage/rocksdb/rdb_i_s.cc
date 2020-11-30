@@ -1771,39 +1771,88 @@ static int rdb_i_s_lock_info_fill_table(
   }
 
   /* cf id -> rocksdb::KeyLockInfo */
-  std::unordered_multimap<uint32_t, rocksdb::KeyLockInfo> lock_info =
-      rdb->GetLockStatusData();
+  if (range_lock_mgr) {
+    // Use Range Lock Manager's interface for obtaining more specific
+    // information about the acquired locks
+    auto lock_info = range_lock_mgr->GetRangeLockStatusData();
 
-  for (const auto &lock : lock_info) {
-    const uint32_t cf_id = lock.first;
-    const auto &key_lock_info = lock.second;
-    auto key_hexstr = rdb_hexdump(key_lock_info.key.c_str(),
-                                  key_lock_info.key.length(), FN_REFLEN);
-    if (key_lock_info.has_key2)
-    {
-      const auto key2_hexstr = rdb_hexdump(key_lock_info.key2.c_str(),
-                                           key_lock_info.key2.length(), 
-                                           FN_REFLEN - key_hexstr.size() - 3);
-      key_hexstr.append(" - ");
-      key_hexstr.append(key2_hexstr);
+    for (const auto &lock : lock_info) {
+      const uint32_t cf_id = lock.first;
+      const auto &range_lock_info = lock.second;
+
+      std::string key_hexstr;
+      // For keys: :0 keys should look like point keys
+      if (!range_lock_info.start.inf_suffix &&
+          !range_lock_info.end.inf_suffix &&
+          (range_lock_info.start.slice ==
+           range_lock_info.end.slice)) {
+        // Ok the lock is held on a single-point range.
+        // Show it like a single-point key
+        key_hexstr = rdb_hexdump(range_lock_info.start.slice.c_str(),
+                                 range_lock_info.start.slice.length(),
+                                 FN_REFLEN);
+      } else {
+        key_hexstr = rdb_hexdump(range_lock_info.start.slice.c_str(),
+                                 range_lock_info.start.slice.length(),
+                                 FN_REFLEN);
+        if (range_lock_info.start.inf_suffix)
+          key_hexstr.append(":1");
+
+        key_hexstr.append("-");
+
+        std::string key2 = rdb_hexdump(range_lock_info.end.slice.c_str(),
+                                       range_lock_info.end.slice.length(),
+                                       FN_REFLEN);
+        if (range_lock_info.end.inf_suffix)
+          key2.append(":1");
+        key_hexstr.append(key2);
+      }
+
+      for (const auto &id : range_lock_info.ids) {
+        tables->table->field[RDB_LOCKS_FIELD::COLUMN_FAMILY_ID]->store(cf_id,
+                                                                       true);
+        tables->table->field[RDB_LOCKS_FIELD::TRANSACTION_ID]->store(id, true);
+
+        tables->table->field[RDB_LOCKS_FIELD::KEY]->store(
+            key_hexstr.c_str(), key_hexstr.size(), system_charset_info);
+        tables->table->field[RDB_LOCKS_FIELD::MODE]->store(
+            range_lock_info.exclusive ? "X" : "S", 1, system_charset_info);
+
+        /* Tell MySQL about this row in the virtual table */
+        ret = static_cast<int>(
+            my_core::schema_table_store_record(thd, tables->table));
+
+        if (ret != 0) {
+          break;
+        }
+      }
     }
+  } else {
+    std::unordered_multimap<uint32_t, rocksdb::KeyLockInfo> lock_info =
+        rdb->GetLockStatusData();
 
-    for (const auto &id : key_lock_info.ids) {
-      tables->table->field[RDB_LOCKS_FIELD::COLUMN_FAMILY_ID]->store(cf_id,
-                                                                     true);
-      tables->table->field[RDB_LOCKS_FIELD::TRANSACTION_ID]->store(id, true);
+    for (const auto &lock : lock_info) {
+      const uint32_t cf_id = lock.first;
+      const auto &key_lock_info = lock.second;
+      auto key_hexstr = rdb_hexdump(key_lock_info.key.c_str(),
+                                    key_lock_info.key.length(), FN_REFLEN);
+      for (const auto &id : key_lock_info.ids) {
+        tables->table->field[RDB_LOCKS_FIELD::COLUMN_FAMILY_ID]->store(cf_id,
+                                                                       true);
+        tables->table->field[RDB_LOCKS_FIELD::TRANSACTION_ID]->store(id, true);
 
-      tables->table->field[RDB_LOCKS_FIELD::KEY]->store(
-          key_hexstr.c_str(), key_hexstr.size(), system_charset_info);
-      tables->table->field[RDB_LOCKS_FIELD::MODE]->store(
-          key_lock_info.exclusive ? "X" : "S", 1, system_charset_info);
+        tables->table->field[RDB_LOCKS_FIELD::KEY]->store(
+            key_hexstr.c_str(), key_hexstr.size(), system_charset_info);
+        tables->table->field[RDB_LOCKS_FIELD::MODE]->store(
+            key_lock_info.exclusive ? "X" : "S", 1, system_charset_info);
 
-      /* Tell MySQL about this row in the virtual table */
-      ret = static_cast<int>(
-          my_core::schema_table_store_record(thd, tables->table));
+        /* Tell MySQL about this row in the virtual table */
+        ret = static_cast<int>(
+            my_core::schema_table_store_record(thd, tables->table));
 
-      if (ret != 0) {
-        break;
+        if (ret != 0) {
+          break;
+        }
       }
     }
   }

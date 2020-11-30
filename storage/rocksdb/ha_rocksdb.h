@@ -1250,4 +1250,6 @@ extern std::atomic<uint64_t> rocksdb_select_bypass_executed;
 extern std::atomic<uint64_t> rocksdb_select_bypass_rejected;
 extern std::atomic<uint64_t> rocksdb_select_bypass_failed;
 
+extern std::shared_ptr<rocksdb::RangeLockManagerHandle> range_lock_mgr;
+
 }  // namespace myrocks
