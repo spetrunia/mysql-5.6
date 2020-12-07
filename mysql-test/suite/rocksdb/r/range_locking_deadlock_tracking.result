@@ -50,6 +50,26 @@ SNAPSHOTS
 ---------
 LIST OF SNAPSHOTS FOR EACH SESSION:
 ----------LATEST DETECTED DEADLOCKS----------
+
+*** DEADLOCK PATH
+=========================================
+TSTAMP
+TXN_ID
+COLUMN FAMILY NAME: default
+KEY
+LOCK TYPE: EXCLUSIVE
+INDEX NAME: PRIMARY
+TABLE NAME: test.t
+---------------WAITING FOR---------------
+TSTAMP
+TXN_ID
+COLUMN FAMILY NAME: default
+KEY
+LOCK TYPE: EXCLUSIVE
+INDEX NAME: PRIMARY
+TABLE NAME: test.t
+
+--------TXN_ID GOT DEADLOCK---------
 -----------------------------------------
 END OF ROCKSDB TRANSACTION MONITOR OUTPUT
 =========================================
@@ -81,6 +101,46 @@ SNAPSHOTS
 ---------
 LIST OF SNAPSHOTS FOR EACH SESSION:
 ----------LATEST DETECTED DEADLOCKS----------
+
+*** DEADLOCK PATH
+=========================================
+TSTAMP
+TXN_ID
+COLUMN FAMILY NAME: default
+KEY
+LOCK TYPE: EXCLUSIVE
+INDEX NAME: PRIMARY
+TABLE NAME: test.t
+---------------WAITING FOR---------------
+TSTAMP
+TXN_ID
+COLUMN FAMILY NAME: default
+KEY
+LOCK TYPE: EXCLUSIVE
+INDEX NAME: PRIMARY
+TABLE NAME: test.t
+
+--------TXN_ID GOT DEADLOCK---------
+
+*** DEADLOCK PATH
+=========================================
+TSTAMP
+TXN_ID
+COLUMN FAMILY NAME: default
+KEY
+LOCK TYPE: EXCLUSIVE
+INDEX NAME: PRIMARY
+TABLE NAME: test.t
+---------------WAITING FOR---------------
+TSTAMP
+TXN_ID
+COLUMN FAMILY NAME: default
+KEY
+LOCK TYPE: EXCLUSIVE
+INDEX NAME: PRIMARY
+TABLE NAME: test.t
+
+--------TXN_ID GOT DEADLOCK---------
 -----------------------------------------
 END OF ROCKSDB TRANSACTION MONITOR OUTPUT
 =========================================
@@ -113,6 +173,66 @@ SNAPSHOTS
 ---------
 LIST OF SNAPSHOTS FOR EACH SESSION:
 ----------LATEST DETECTED DEADLOCKS----------
+
+*** DEADLOCK PATH
+=========================================
+TSTAMP
+TXN_ID
+COLUMN FAMILY NAME: default
+KEY
+LOCK TYPE: EXCLUSIVE
+INDEX NAME: PRIMARY
+TABLE NAME: test.t
+---------------WAITING FOR---------------
+TSTAMP
+TXN_ID
+COLUMN FAMILY NAME: default
+KEY
+LOCK TYPE: EXCLUSIVE
+INDEX NAME: PRIMARY
+TABLE NAME: test.t
+
+--------TXN_ID GOT DEADLOCK---------
+
+*** DEADLOCK PATH
+=========================================
+TSTAMP
+TXN_ID
+COLUMN FAMILY NAME: default
+KEY
+LOCK TYPE: EXCLUSIVE
+INDEX NAME: PRIMARY
+TABLE NAME: test.t
+---------------WAITING FOR---------------
+TSTAMP
+TXN_ID
+COLUMN FAMILY NAME: default
+KEY
+LOCK TYPE: EXCLUSIVE
+INDEX NAME: PRIMARY
+TABLE NAME: test.t
+
+--------TXN_ID GOT DEADLOCK---------
+
+*** DEADLOCK PATH
+=========================================
+TSTAMP
+TXN_ID
+COLUMN FAMILY NAME: default
+KEY
+LOCK TYPE: EXCLUSIVE
+INDEX NAME: PRIMARY
+TABLE NAME: test.t
+---------------WAITING FOR---------------
+TSTAMP
+TXN_ID
+COLUMN FAMILY NAME: default
+KEY
+LOCK TYPE: EXCLUSIVE
+INDEX NAME: PRIMARY
+TABLE NAME: test.t
+
+--------TXN_ID GOT DEADLOCK---------
 -----------------------------------------
 END OF ROCKSDB TRANSACTION MONITOR OUTPUT
 =========================================
@@ -129,6 +249,26 @@ SNAPSHOTS
 ---------
 LIST OF SNAPSHOTS FOR EACH SESSION:
 ----------LATEST DETECTED DEADLOCKS----------
+
+*** DEADLOCK PATH
+=========================================
+TSTAMP
+TXN_ID
+COLUMN FAMILY NAME: default
+KEY
+LOCK TYPE: EXCLUSIVE
+INDEX NAME: PRIMARY
+TABLE NAME: test.t
+---------------WAITING FOR---------------
+TSTAMP
+TXN_ID
+COLUMN FAMILY NAME: default
+KEY
+LOCK TYPE: EXCLUSIVE
+INDEX NAME: PRIMARY
+TABLE NAME: test.t
+
+--------TXN_ID GOT DEADLOCK---------
 -----------------------------------------
 END OF ROCKSDB TRANSACTION MONITOR OUTPUT
 =========================================
@@ -149,10 +289,10 @@ i
 3
 select * from t where i=2 for update;
 select * from t where i=3 for update;
-select variable_value into @a from information_schema.global_status where variable_name='rocksdb_row_lock_deadlocks';
+select variable_value into @a from performance_schema.global_status where variable_name='rocksdb_row_lock_deadlocks';
 select * from t where i=1 for update;
 ERROR 40001: Deadlock found when trying to get lock; try restarting transaction
-select case when variable_value-@a = 1 then 'true' else 'false' end as deadlocks from information_schema.global_status where variable_name='rocksdb_row_lock_deadlocks';
+select case when variable_value-@a = 1 then 'true' else 'false' end as deadlocks from performance_schema.global_status where variable_name='rocksdb_row_lock_deadlocks';
 deadlocks
 true
 rollback;
