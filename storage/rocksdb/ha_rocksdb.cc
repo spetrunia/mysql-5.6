@@ -2866,7 +2866,7 @@ class Rdb_transaction {
   bool m_stmt_ignores_snapshot = false;
 
   /* Snapshot-ignore mode will put away m_reads_opts.snapshot here: */
-  const rocksdb::Snapshot *m_saved_snapshot;
+  const rocksdb::Snapshot *m_saved_snapshot= nullptr;
 
  public:
 
