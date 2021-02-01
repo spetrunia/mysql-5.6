@@ -55,7 +55,6 @@ INCLUDE_DIRECTORIES(
   ${ROCKSDB_ROOT}
   ${ROCKSDB_ROOT}/include
   ${ROCKSDB_ROOT}/third-party/gtest-1.8.1/fused-src
-  ${CMAKE_SOURCE_DIR}/rocksdb/utilities/transactions/lock/range/range_tree/
 )
 
 # Suppress warnings for all compilers

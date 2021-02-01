@@ -1,5 +1,6 @@
 --source include/have_rocksdb.inc
 --source suite/rocksdb/include/have_range_locking.inc
+--source include/have_debug_sync.inc
 
 select @@rocksdb_use_range_locking;
 

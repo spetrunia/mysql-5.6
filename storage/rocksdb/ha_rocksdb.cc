@@ -3146,7 +3146,9 @@ class Rdb_transaction {
   virtual void acquire_snapshot(bool acquire_now) = 0;
   virtual void release_snapshot() = 0;
 
-  bool has_snapshot() const { return m_read_opts.snapshot != nullptr; }
+  bool has_snapshot() const {
+    return m_read_opts.snapshot != nullptr || m_saved_snapshot;
+  }
 
  private:
   // The Rdb_sst_info structures we are currently loading.  In a partitioned
@@ -5095,7 +5097,7 @@ class Rdb_snapshot_status : public Rdb_tx_list_walker {
 
     /* Calculate the duration the snapshot has existed */
     int64_t snapshot_timestamp = tx->m_snapshot_timestamp;
-    if (snapshot_timestamp != 0) {
+    if (snapshot_timestamp != 0 && tx->has_snapshot()) {
       int64_t curr_time;
       rdb->GetEnv()->GetCurrentTime(&curr_time);
 
