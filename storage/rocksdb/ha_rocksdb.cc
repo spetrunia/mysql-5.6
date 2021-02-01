@@ -2876,6 +2876,8 @@ class Rdb_transaction {
       m_saved_snapshot = m_read_opts.snapshot;
       m_read_opts.snapshot = nullptr;
       m_stmt_ignores_snapshot= true;
+      if (!m_snapshot_timestamp)
+        rdb->GetEnv()->GetCurrentTime(&m_snapshot_timestamp);
     }
   }
 
@@ -10895,7 +10897,8 @@ int ha_rocksdb::check_and_lock_unique_pk(const uint key_id,
     If the pk key has ttl, we may need to pretend the row wasn't
     found if it is already expired.
   */
-  DBUG_ASSERT(row_info.tx->has_snapshot() &&
+  DBUG_ASSERT((row_info.tx->has_snapshot() ||
+               row_info.tx->in_snapshot_ignore_mode()) &&
               row_info.tx->m_snapshot_timestamp != 0);
   if (key_found && m_pk_descr->has_ttl() &&
       should_hide_ttl_rec(*m_pk_descr, m_retrieved_record,
@@ -11055,7 +11058,8 @@ int ha_rocksdb::check_and_lock_sk(
     Also need to scan RocksDB and verify the key has not been deleted
     in the transaction.
   */
-  DBUG_ASSERT(row_info.tx->has_snapshot() &&
+  DBUG_ASSERT((row_info.tx->has_snapshot() ||
+               row_info.tx->in_snapshot_ignore_mode()) &&
               row_info.tx->m_snapshot_timestamp != 0);
   *found = !read_key_exact(kd, iter, all_parts_used, new_slice,
                            row_info.tx->m_snapshot_timestamp);

@@ -1751,7 +1751,6 @@ static ST_FIELD_INFO rdb_i_s_lock_info_fields_info[] = {
     ROCKSDB_FIELD_INFO("MODE", 32, MYSQL_TYPE_STRING, 0),
     ROCKSDB_FIELD_INFO_END};
 
-
 /* Fill the information_schema.rocksdb_locks virtual table */
 static int rdb_i_s_lock_info_fill_table(
     my_core::THD *const thd, my_core::TABLE_LIST *const tables,
