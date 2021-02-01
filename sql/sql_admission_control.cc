@@ -16,6 +16,8 @@
 
 #include "sql/sql_admission_control.h"
 #include "sql/auth/auth_acls.h"
+#include "sql/mysqld.h"
+#include "sql/sql_class.h"
 #include "sql/sql_lex.h"
 
 #define IS_BIT_SET(val, n) ((val) & (1 << (n)))
@@ -23,6 +25,9 @@
 bool opt_admission_control_by_trx = false;
 ulonglong admission_control_filter;
 char *admission_control_weights;
+ulonglong admission_control_wait_events;
+ulonglong admission_control_yield_freq;
+
 AC *db_ac;
 #ifdef HAVE_PSI_INTERFACE
 PSI_stage_info stage_admission_control_enter = {0, "Admission control enter", 0,
@@ -31,6 +36,8 @@ PSI_stage_info stage_admission_control_exit = {0, "Admission control exit", 0,
                                                PSI_DOCUMENT_ME};
 PSI_stage_info stage_waiting_for_admission = {0, "waiting for admission", 0,
                                               PSI_DOCUMENT_ME};
+PSI_stage_info stage_waiting_for_readmission = {0, "waiting for readmission", 0,
+                                                PSI_DOCUMENT_ME};
 #endif
 
 /*
@@ -175,16 +182,21 @@ static bool filter_command(enum_sql_command sql_command) {
   }
 }
 
-/*
+/**
  * Admit a query based on database entity
  *
  * @param thd THD structure
- * @param attrs Resource attributes
+ * @param mode how to re-enter admission control
  *
  * @return 0 if the query is admitted, 1 otherwise
  */
-int multi_tenancy_admit_query(THD *thd, const MT_RESOURCE_ATTRS *attrs) {
+int multi_tenancy_admit_query(THD *thd,
+                              enum_admission_control_request_mode mode) {
   bool admission_check = false;
+
+  // Return if THD is already in an admission control
+  // (e.g. part of a multi query packet).
+  if (thd->is_in_ac) return 0;
 
   /*
    * Admission control check will be enforced if ALL of the following
@@ -194,7 +206,7 @@ int multi_tenancy_admit_query(THD *thd, const MT_RESOURCE_ATTRS *attrs) {
    *  3. The query is not part of a transaction (controlled by global var
    *     opt_admission_control_by_trx), nor the THD is already in an admission
    *     control (e.g. part of a multi query packet)
-   *  4. Session database is set for THD
+   *  4. AC entity is set for THD
    *  5. sys var max_running_queries > 0
    *  6. The command is not filtered by admission_control_filter
    */
@@ -203,9 +215,8 @@ int multi_tenancy_admit_query(THD *thd, const MT_RESOURCE_ATTRS *attrs) {
 
   if (!thd->security_context()->check_access(SUPER_ACL) && /* 1 */
       !thd->rli_slave &&                                   /* 2 */
-      ((!opt_admission_control_by_trx || beginning_of_trx) &&
-       !thd->is_in_ac) &&                    /* 3 */
-      attrs->database &&                     /* 4 */
+      (!opt_admission_control_by_trx || beginning_of_trx) && /* 3 */
+      thd->ac_node && thd->ac_node->ac_info &&               /* 4 */
       db_ac->get_max_running_queries() &&    /* 5 */
       !filter_command(thd->lex->sql_command) /* 6 */
   ) {
@@ -213,15 +224,15 @@ int multi_tenancy_admit_query(THD *thd, const MT_RESOURCE_ATTRS *attrs) {
   }
 
   if (admission_check) {
-    Ac_result res = db_ac->admission_control_enter(thd, attrs);
+    Ac_result res = db_ac->admission_control_enter(thd, mode);
     if (res == Ac_result::AC_ABORTED) {
       my_error(ER_DB_ADMISSION_CONTROL, MYF(0),
                db_ac->get_max_waiting_queries(),
-               thd->db().str ? thd->db().str : "unknown database");
+               thd->ac_node->ac_info->get_entity().c_str());
       return 1;
     } else if (res == Ac_result::AC_TIMEOUT) {
       my_error(ER_DB_ADMISSION_CONTROL_TIMEOUT, MYF(0),
-               thd->db().str ? thd->db().str : "unknown database");
+               thd->ac_node->ac_info->get_entity().c_str());
       return 1;
     } else if (res == Ac_result::AC_KILLED) {
       return 1;
@@ -233,18 +244,22 @@ int multi_tenancy_admit_query(THD *thd, const MT_RESOURCE_ATTRS *attrs) {
   return 0;
 }
 
-/*
+/**
  * Exit a query based on database entity
  *
  * @param thd THD structure
- * @param attrs Resource attributes
  *
  * @return 0 if successful, 1 if otherwise
  */
-int multi_tenancy_exit_query(THD *thd, const MT_RESOURCE_ATTRS *attrs) {
-  if (!attrs->database) return 0;  // no limiting
+int multi_tenancy_exit_query(THD *thd) {
+  DBUG_ASSERT(thd->is_in_ac);
+  thd->is_in_ac = false;
+  thd->last_yield_counter = thd->yield_counter;
 
-  db_ac->admission_control_exit(thd, attrs);
+  // is_in_ac shouldn't be set without ac_info.
+  DBUG_ASSERT(thd->ac_node && thd->ac_node->ac_info);
+
+  db_ac->admission_control_exit(thd);
   return 0;
 }
 
@@ -254,7 +269,7 @@ int multi_tenancy_exit_query(THD *thd, const MT_RESOURCE_ATTRS *attrs) {
  *
  * @return 0 on success, -1 on error
  */
-static int stoul_noexcept(const std::string str, ulong *val) {
+int stoul_noexcept(const std::string str, ulong *val) {
   try {
     size_t pos = 0;
     *val = std::stoul(str, &pos);
@@ -271,33 +286,123 @@ static int stoul_noexcept(const std::string str, ulong *val) {
 }
 
 static ulong get_queue(THD *thd) {
-  const std::string attr_name = "@@admission_control_queue";
+  // To get queue name, we look at query attribute, connection attribute,
+  // and then session variable in that order.
+  return thd->get_query_or_connect_attr_value(
+                       "@@admission_control_queue",             // name
+                       thd->variables.admission_control_queue,  // default
+                       MAX_AC_QUEUES);                          // maximum
+}
 
-  // To get queue name, we look at query attribute, connection attribute, and
-  // then session variable in that order.
-  for (const auto &p : thd->query_attrs_list) {
-    if (p.first == attr_name) {
-      ulong value = 0;
-      if (!stoul_noexcept(p.second.c_str(), &value) && value < MAX_AC_QUEUES) {
-        return value;
-      }
-    }
+/**
+ * Add a connection to admission control.
+ *
+ * @param thd THD structure
+ *
+ * @return 0 if the connection is added, 1 if rejected
+ */
+int multi_tenancy_add_connection(THD *thd, const char *new_db) {
+  DBUG_ASSERT(!thd->ac_node || !thd->ac_node->ac_info);
+
+  Ac_result result = Ac_result::AC_ADMITTED;
+
+  // TODO: add accounting for connections without database, and for super.
+  if (new_db && new_db[0] &&
+      !thd->security_context()->check_access(SUPER_ACL)) {
+    result = db_ac->add_connection(thd, new_db);
   }
 
-  auto it = thd->connection_attrs_map.find(attr_name);
-  if (it != thd->connection_attrs_map.end()) {
-    ulong value = 0;
-    if (!stoul_noexcept(it->second.c_str(), &value) && value < MAX_AC_QUEUES) {
-      return value;
-    }
+  return result == Ac_result::AC_ADMITTED ? 0 : 1;
+}
+
+/**
+ * Release a connection from admission control.
+ *
+ * @param thd THD structure
+ *
+ * @return 0 if successful, 1 if otherwise
+ */
+int multi_tenancy_close_connection(THD *thd) {
+  if (!thd->ac_node || !thd->ac_node->ac_info) return 0;
+
+  if (thd->is_in_ac) multi_tenancy_exit_query(thd);
+
+  db_ac->close_connection(thd);
+  return 0;
+}
+
+/**
+ * Applies connection control checks for the entity.
+
+ * @param thd THD structure.
+ * @param new_db db to add connection for.
+ * @return AC_ADMITTED - Admitted
+ *         AC_ABORTED  - Rejected because limit is reached
+ */
+Ac_result AC::add_connection(THD *thd, const char *new_db) {
+  Ac_result res = Ac_result::AC_ADMITTED;
+  std::string entity = new_db;
+
+  if (!thd->ac_node) {
+    // Both THD and the admission control queue will share the object
+    // created here.
+    thd->ac_node = std::make_shared<st_ac_node>(thd);
   }
 
-  return thd->variables.admission_control_queue;
+  DBUG_ASSERT(!thd->ac_node->ac_info);
+
+  mysql_rwlock_rdlock(&LOCK_ac);
+  auto it = ac_map.find(entity);
+  if (it == ac_map.end()) {
+    // New DB.
+    mysql_rwlock_unlock(&LOCK_ac);
+    insert(entity);
+    mysql_rwlock_rdlock(&LOCK_ac);
+    it = ac_map.find(entity);
+  }
+
+  // Entity could be removed right after it was inserted so double check.
+  if (it != ac_map.end()) {
+    auto ac_info = it->second;
+    mysql_mutex_lock(&ac_info->lock);
+
+    if (!max_connections || ac_info->connections < max_connections) {
+      ++ac_info->connections;
+      thd->ac_node->ac_info = ac_info;
+    } else {
+      ++ac_info->rejected_connections;
+      ++total_rejected_connections;
+      res = Ac_result::AC_ABORTED;
+    }
+
+    mysql_mutex_unlock(&ac_info->lock);
+  }
+
+  mysql_rwlock_unlock(&LOCK_ac);
+  return res;
+}
+
+/**
+ * @brief Releases connection for the current entity.
+
+ * @param thd THD structure.
+ */
+void AC::close_connection(THD *thd) {
+  auto ac_info = thd->ac_node->ac_info;
+  DBUG_ASSERT(ac_info);
+
+  mysql_mutex_lock(&ac_info->lock);
+
+  DBUG_ASSERT(ac_info->connections > 0);
+  --ac_info->connections;
+  thd->ac_node->ac_info = nullptr;
+
+  mysql_mutex_unlock(&ac_info->lock);
 }
 
 /**
  * @param thd THD structure.
- * @param attrs session resource attributes
+ * @param mode how to re-enter admission control
  *
  * Applies admission control checks for the entity. Outline of
  * the steps in this function:
@@ -315,122 +420,90 @@ static ulong get_queue(THD *thd) {
  *         AC_TIMEOUT  - Rejected because waiting on queue for too long
  *         AC_KILLED   - Killed while waiting for admission
  */
-Ac_result AC::admission_control_enter(THD *thd,
-                                      const MT_RESOURCE_ATTRS *attrs) {
+Ac_result AC::admission_control_enter(
+    THD *thd, enum_admission_control_request_mode mode) {
   Ac_result res = Ac_result::AC_ADMITTED;
-  std::string entity = attrs->database;
   const char *prev_proc_info = thd->proc_info;
   THD_STAGE_INFO(thd, stage_admission_control_enter);
   // Unlock this before waiting.
   mysql_rwlock_rdlock(&LOCK_ac);
   if (max_running_queries) {
-    auto it = ac_map.find(entity);
-    if (it == ac_map.end()) {
-      // New DB.
-      mysql_rwlock_unlock(&LOCK_ac);
-      insert(entity);
-      mysql_rwlock_rdlock(&LOCK_ac);
-      it = ac_map.find(entity);
-    }
-
-    if (!thd->ac_node) {
-      // Both THD and the admission control queue will share the object
-      // created here.
-      thd->ac_node = std::make_shared<st_ac_node>(thd);
-    }
-    auto ac_info = it->second;
-    MT_RETURN_TYPE ret = MT_RETURN_TYPE::MULTI_TENANCY_RET_FALLBACK;
+    auto ac_info = thd->ac_node->ac_info;
+    thd->ac_node->queue = get_queue(thd);
     mysql_mutex_lock(&ac_info->lock);
-    // if plugin is disabled, fallback to check global query limit
-    if (ret == MT_RETURN_TYPE::MULTI_TENANCY_RET_FALLBACK) {
-      if (ac_info->running_queries < max_running_queries)
-        ret = MT_RETURN_TYPE::MULTI_TENANCY_RET_ACCEPT;
-      else {
-        if (max_waiting_queries &&
-            ac_info->waiting_queries >= max_waiting_queries)
-          ret = MT_RETURN_TYPE::MULTI_TENANCY_RET_REJECT;
-        else
-          ret = MT_RETURN_TYPE::MULTI_TENANCY_RET_WAIT;
+
+    if (ac_info->running_queries < max_running_queries) {
+      // We are below the max running limit.
+      ++ac_info->running_queries;
+      ++ac_info->queues[thd->ac_node->queue].running_queries;
+      DBUG_ASSERT(!thd->ac_node->running);
+      thd->ac_node->running = true;
+    } else if (max_waiting_queries &&
+               ac_info->waiting_queries >= max_waiting_queries) {
+      ++ac_info->queues[thd->ac_node->queue].aborted_queries;
+      ++ac_info->aborted_queries;
+      ++total_aborted_queries;
+      // We reached max waiting limit. Error out
+      res = Ac_result::AC_ABORTED;
+    } else {
+      bool timeout;
+      enqueue(thd, ac_info, mode);
+      /**
+        Inserting or deleting in std::map will not invalidate existing
+        iterators except of course if the current iterator is erased. If the
+        db corresponding to this iterator is getting dropped, these waiting
+        queries are given signal to abort before the iterator
+        is erased. See AC::remove().
+        So, we don't need LOCK_ac here. The motivation to unlock the read lock
+        is that waiting queries here shouldn't block other operations
+        modifying ac_map or max_running_queries/max_waiting_queries.
+      */
+      while (true) {
+        mysql_rwlock_unlock(&LOCK_ac);
+        timeout = wait_for_signal(thd, thd->ac_node, ac_info, mode);
+        // Retake locks in correct lock order.
+        mysql_rwlock_rdlock(&LOCK_ac);
+        mysql_mutex_lock(&ac_info->lock);
+        // Break out if query has timed out, was killed, or has started running.
+        // KILLs will also signal our condition variable (see THD::enter_cond
+        // for how a cv is installed and THD::awake for how it is signaled).
+        if (timeout || thd->killed || thd->ac_node->running) break;
+      }
+
+      // If a query has been successfully admitted, then it has already
+      // been dequeued by a different thread, with updated counters.
+      //
+      // The only reason it might be still queued is during error conditions.
+      if (thd->ac_node->queued) {
+        DBUG_ASSERT(timeout || thd->killed);
+        dequeue(thd, ac_info);
+      }
+
+      if (timeout || thd->killed) {
+        // It's possible that we've gotten an error after this thread was
+        // passed admission control. If so, reset the running counters.
+        if (thd->ac_node->running) {
+          DBUG_ASSERT(ac_info->running_queries > 0);
+          --ac_info->running_queries;
+          DBUG_ASSERT(ac_info->queues[thd->ac_node->queue].running_queries > 0);
+          --ac_info->queues[thd->ac_node->queue].running_queries;
+          thd->ac_node->running = false;
+        }
+
+        if (timeout) {
+          ++total_timeout_queries;
+          ++ac_info->queues[thd->ac_node->queue].timeout_queries;
+          ++ac_info->timeout_queries;
+          res = Ac_result::AC_TIMEOUT;
+        } else {
+          res = Ac_result::AC_KILLED;
+        }
       }
     }
 
-    bool timeout;
-    thd->ac_node->queue = get_queue(thd);
-    switch (ret) {
-      case MT_RETURN_TYPE::MULTI_TENANCY_RET_REJECT:
-        ++ac_info->queues[thd->ac_node->queue].aborted_queries;
-        ++total_aborted_queries;
-        // We reached max waiting limit. Error out
-        mysql_mutex_unlock(&ac_info->lock);
-        res = Ac_result::AC_ABORTED;
-        break;
-
-      case MT_RETURN_TYPE::MULTI_TENANCY_RET_WAIT:
-        enqueue(thd, ac_info);
-        /**
-          Inserting or deleting in std::map will not invalidate existing
-          iterators except of course if the current iterator is erased. If the
-          db corresponding to this iterator is getting dropped, these waiting
-          queries are given signal to abort before the iterator
-          is erased. See AC::remove().
-          So, we don't need LOCK_ac here. The motivation to unlock the read lock
-          is that waiting queries here shouldn't block other operations
-          modifying ac_map or max_running_queries/max_waiting_queries.
-        */
-        while (true) {
-          mysql_rwlock_unlock(&LOCK_ac);
-          timeout = wait_for_signal(thd, thd->ac_node, ac_info);
-          // Retake locks in correct lock order.
-          mysql_rwlock_rdlock(&LOCK_ac);
-          mysql_mutex_lock(&ac_info->lock);
-          if (timeout || thd->killed || thd->ac_node->running) break;
-        }
-        // If a query has been successfully admitted, then it has already
-        // been dequeued by a different thread, with updated counters.
-        //
-        // The only reason it might be still queued is during error conditions.
-        if (thd->ac_node->queued) {
-          DBUG_ASSERT(timeout || thd->killed);
-          dequeue(thd, ac_info);
-        }
-
-        if (timeout || thd->killed) {
-          // It's possible that we've gotten an error after this thread was
-          // passed admission control. If so, reset the running counters.
-          if (thd->ac_node->running) {
-            DBUG_ASSERT(ac_info->running_queries > 0);
-            --ac_info->running_queries;
-            DBUG_ASSERT(ac_info->queues[thd->ac_node->queue].running_queries >
-                        0);
-            --ac_info->queues[thd->ac_node->queue].running_queries;
-            thd->ac_node->running = false;
-          }
-
-          mysql_mutex_unlock(&ac_info->lock);
-          if (timeout) {
-            ++total_timeout_queries;
-            ++ac_info->queues[thd->ac_node->queue].timeout_queries;
-            res = Ac_result::AC_TIMEOUT;
-          } else {
-            res = Ac_result::AC_KILLED;
-          }
-          break;
-        }
-        mysql_mutex_unlock(&ac_info->lock);
-        break;
-      case MT_RETURN_TYPE::MULTI_TENANCY_RET_ACCEPT:
-        // We are below the max running limit.
-        ++ac_info->running_queries;
-        ++ac_info->queues[thd->ac_node->queue].running_queries;
-        thd->ac_node->running = true;
-        mysql_mutex_unlock(&ac_info->lock);
-        break;
-
-      default:
-        // unreachable branch
-        DBUG_ASSERT(0);
-    }
+    mysql_mutex_unlock(&ac_info->lock);
   }
+
   mysql_rwlock_unlock(&LOCK_ac);
   thd->proc_info = prev_proc_info;
   return res;
@@ -443,8 +516,9 @@ Ac_result AC::admission_control_enter(THD *thd,
           True  Timeout occurred
 
 */
-bool AC::wait_for_signal(THD *thd, std::shared_ptr<st_ac_node> &ac_node,
-                         const Ac_info_ptr &ac_info) {
+bool AC::wait_for_signal(THD *thd, st_ac_node_ptr &ac_node,
+                         const Ac_info_ptr &ac_info,
+                         enum_admission_control_request_mode mode) {
   PSI_stage_info old_stage;
   int res = 0;
   mysql_mutex_lock(&ac_node->lock);
@@ -458,8 +532,11 @@ bool AC::wait_for_signal(THD *thd, std::shared_ptr<st_ac_node> &ac_node,
     this waiting thread miss the signal from admission_control_exit().
   */
   mysql_mutex_unlock(&ac_info->lock);
-  thd->ENTER_COND(&ac_node->cond, &ac_node->lock, &stage_waiting_for_admission,
-                  &old_stage);
+
+  auto stage = (mode >= AC_REQUEST_QUERY_READMIT_LOPRI)
+                   ? &stage_waiting_for_readmission
+                   : &stage_waiting_for_admission;
+  thd->ENTER_COND(&ac_node->cond, &ac_node->lock, stage, &old_stage);
   if (thd->variables.admission_control_queue_timeout == 0) {
     // Don't bother waiting if timeout is 0.
     res = ETIMEDOUT;
@@ -486,68 +563,71 @@ bool AC::wait_for_signal(THD *thd, std::shared_ptr<st_ac_node> &ac_node,
 
   Signals one waiting thread. Pops out the first THD in the queue.
 */
-void AC::admission_control_exit(THD *thd, const MT_RESOURCE_ATTRS *attrs) {
-  std::string entity = attrs->database;
+void AC::admission_control_exit(THD *thd) {
+  // AC::admission_control_enter admits query when max_running_queries is 0.
+  // Nothing to do here in that case.
+  if (!thd->ac_node->running) return;
+
   const char *prev_proc_info = thd->proc_info;
   THD_STAGE_INFO(thd, stage_admission_control_exit);
+
+  auto ac_info = thd->ac_node->ac_info;
   mysql_rwlock_rdlock(&LOCK_ac);
-  auto it = ac_map.find(entity);
-  if (it != ac_map.end()) {
-    auto ac_info = it->second;
-    mysql_mutex_lock(&ac_info->lock);
+  mysql_mutex_lock(&ac_info->lock);
 
-    if (thd->ac_node->running) {
-      DBUG_ASSERT(ac_info->running_queries > 0);
-      --ac_info->running_queries;
-      DBUG_ASSERT(ac_info->queues[thd->ac_node->queue].running_queries > 0);
-      --ac_info->queues[thd->ac_node->queue].running_queries;
-      thd->ac_node->running = false;
-    }
+  DBUG_ASSERT(ac_info->running_queries > 0);
+  --ac_info->running_queries;
+  DBUG_ASSERT(ac_info->queues[thd->ac_node->queue].running_queries > 0);
+  --ac_info->queues[thd->ac_node->queue].running_queries;
+  thd->ac_node->running = false;
 
-    // We determine here which queue to pick from. For every queue, we
-    // calculate a score based on the number of running queries, and its
-    // weight. Inituitively, the weight determines how much of the running
-    // pool a queue is allowed to occupy. For example, if queue A has weight 3
-    // and queue B has weight 7, the we expect 30% of the pool to have queries
-    // running from A.
-    //
-    // We calculate a score for all queues that have waiting queries, and pick
-    // the queue with the minimum score. In case of ties, we arbitrarily pick
-    // the first encountered queue.
-    if (max_running_queries && ac_info->waiting_queries > 0) {
-      double min_score = std::numeric_limits<double>::max();
-      ulong min_queue = 0;
+  // Assert that max_running_queries == 0 implies no waiting queries.
+  DBUG_ASSERT(max_running_queries != 0 || ac_info->waiting_queries == 0);
+
+  // We determine here which queue to pick from. For every queue, we
+  // calculate a score based on the number of running queries, and its
+  // weight. Inituitively, the weight determines how much of the running
+  // pool a queue is allowed to occupy. For example, if queue A has weight 3
+  // and queue B has weight 7, the we expect 30% of the pool to have queries
+  // running from A.
+  //
+  // We calculate a score for all queues that have waiting queries, and pick
+  // the queue with the minimum score. In case of ties, we arbitrarily pick
+  // the first encountered queue.
+  if (ac_info->waiting_queries > 0 &&
+      ac_info->running_queries < max_running_queries) {
+    double min_score = std::numeric_limits<double>::max();
+    ulong min_queue = 0;
 #ifndef DBUG_OFF
-      ulong running_queries_sum = 0;
-      ulong waiting_queries_sum = 0;
+    ulong running_queries_sum = 0;
+    ulong waiting_queries_sum = 0;
 #endif
 
-      for (ulong i = 0; i < MAX_AC_QUEUES; i++) {
-        const auto &queue = ac_info->queues[i];
+    for (ulong i = 0; i < MAX_AC_QUEUES; i++) {
+      const auto &queue = ac_info->queues[i];
 #ifndef DBUG_OFF
-        running_queries_sum += queue.running_queries;
-        waiting_queries_sum += queue.waiting_queries();
+      running_queries_sum += queue.running_queries;
+      waiting_queries_sum += queue.waiting_queries();
 #endif
-        // Skip queues that don't have waiting queries.
-        if (queue.waiting_queries() == 0) continue;
+      // Skip queues that don't have waiting queries.
+      if (queue.waiting_queries() == 0) continue;
 
-        double score = queue.running_queries / (weights[i] ? weights[i] : 1);
+      double score = queue.running_queries / (weights[i] ? weights[i] : 1);
 
-        if (score < min_score) {
-          min_queue = i;
-          min_score = score;
-        }
+      if (score < min_score) {
+        min_queue = i;
+        min_score = score;
       }
-
-      DBUG_ASSERT(ac_info->waiting_queries == waiting_queries_sum);
-      DBUG_ASSERT(ac_info->running_queries == running_queries_sum);
-
-      auto &candidate = ac_info->queues[min_queue].queue.front();
-      dequeue_and_run(candidate->thd, ac_info);
     }
 
-    mysql_mutex_unlock(&ac_info->lock);
+    DBUG_ASSERT(ac_info->waiting_queries == waiting_queries_sum);
+    DBUG_ASSERT(ac_info->running_queries == running_queries_sum);
+
+    auto &candidate = ac_info->queues[min_queue].queue.front();
+    dequeue_and_run(candidate->thd, ac_info);
   }
+
+  mysql_mutex_unlock(&ac_info->lock);
   mysql_rwlock_unlock(&LOCK_ac);
   thd->proc_info = prev_proc_info;
 }
@@ -555,16 +635,24 @@ void AC::admission_control_exit(THD *thd, const MT_RESOURCE_ATTRS *attrs) {
 /*
  * @param thd THD
  * @param ac_info AC info
+ * @param mode how to re-enter admission control
  *
  * Enqueues thd onto its queue. The queue is taken from thd->ac_node->queue.
  */
-void AC::enqueue(THD *thd, std::shared_ptr<Ac_info> ac_info) {
+void AC::enqueue(THD *thd, Ac_info_ptr ac_info,
+                 enum_admission_control_request_mode mode) {
   mysql_mutex_assert_owner(&ac_info->lock);
   auto &ac_node = thd->ac_node;
 
   ulong queue = ac_node->queue;
-  ac_info->queues[queue].queue.push_back(ac_node);
-  ac_node->pos = --ac_info->queues[queue].queue.end();
+  if (mode == AC_REQUEST_QUERY_READMIT_HIPRI) {
+    ac_info->queues[queue].queue.push_front(ac_node);
+    ac_node->pos = ac_info->queues[queue].queue.begin();
+  } else {
+    ac_info->queues[queue].queue.push_back(ac_node);
+    ac_node->pos = --ac_info->queues[queue].queue.end();
+  }
+
   ac_node->queued = true;
   ++ac_info->waiting_queries;
 }
@@ -575,7 +663,7 @@ void AC::enqueue(THD *thd, std::shared_ptr<Ac_info> ac_info) {
  *
  * Dequeues thd from its queue. The queue is taken from thd->ac_node->queue.
  */
-void AC::dequeue(THD *thd, std::shared_ptr<Ac_info> ac_info) {
+void AC::dequeue(THD *thd, Ac_info_ptr ac_info) {
   mysql_mutex_assert_owner(&ac_info->lock);
   auto &ac_node = thd->ac_node;
 
@@ -592,16 +680,19 @@ void AC::dequeue(THD *thd, std::shared_ptr<Ac_info> ac_info) {
  * Dequeues thd from its queue. Sets its state to running, and signals
  * that thread to start running.
  */
-void AC::dequeue_and_run(THD *thd, std::shared_ptr<Ac_info> ac_info) {
+void AC::dequeue_and_run(THD *thd, Ac_info_ptr ac_info) {
   mysql_mutex_assert_owner(&ac_info->lock);
 
   dequeue(thd, ac_info);
 
   ++ac_info->running_queries;
   ++ac_info->queues[thd->ac_node->queue].running_queries;
+  DBUG_ASSERT(!thd->ac_node->running);
   thd->ac_node->running = true;
 
-  signal(thd->ac_node);
+  mysql_mutex_lock(&thd->ac_node->lock);
+  mysql_cond_signal(&thd->ac_node->cond);
+  mysql_mutex_unlock(&thd->ac_node->lock);
 }
 
 /*
@@ -635,10 +726,14 @@ int AC::update_queue_weights(char *s) {
   return 0;
 }
 
-/*
+/**
  * @param entity The entity being dropped
  *
  * Removes a dropped entity info from the global map.
+ * Connections could still remain pointing to ac_info
+ * of this entity but since the entity is dropped these
+ * connections are expected to move away to another
+ * entity.
  */
 void AC::remove(const char *entity) {
   std::string str(entity);
@@ -665,13 +760,114 @@ void AC::remove(const char *entity) {
 }
 
 /*
+ * @param entity The entity being inserted
+ *
+ * Inserts an entity into the global map.
+ */
+void AC::insert(const std::string &entity) {
+  mysql_rwlock_wrlock(&LOCK_ac);
+  if (ac_map.find(entity) == ac_map.end()) {
+    ac_map.emplace(entity, std::make_shared<Ac_info>(entity));
+  }
+  mysql_rwlock_unlock(&LOCK_ac);
+}
+
+/*
+ * @param val Value of max_running_queries
+ *
+ * Updates max_running_queries, waking up any threads if necessary.
+ */
+void AC::update_max_running_queries(ulong val) {
+  // lock to protect against erasing map iterators.
+  mysql_rwlock_wrlock(&LOCK_ac);
+  ulong old_val = max_running_queries;
+  max_running_queries = val;
+  // Signal any waiting threads which are below the new limit. Note 0 is a
+  // special case where every waiting thread needs to be signalled.
+  //
+  // We don't kill any queries if the max is lowered, so it's possible for
+  // the number of running queries temporarily exceed the new max.
+  if (val > old_val || !val) {
+    for (auto &it : ac_map) {
+      auto &ac_info = it.second;
+      mysql_mutex_lock(&ac_info->lock);
+      size_t signaled = 0;
+      // If we're not signaling all threads, we should dequeue according to
+      // score for fairness, but we're not for simplicity. This might be
+      // fine since update_max_running_queries should be a relatively rare
+      // operation, so we're still fair in steady state.
+      for (auto &q : ac_info->queues) {
+        while (q.waiting_queries() > 0) {
+          dequeue_and_run(q.queue.front()->thd, ac_info);
+          if (val && ++signaled >= val - old_val) {
+            break;
+          }
+        }
+      }
+      mysql_mutex_unlock(&ac_info->lock);
+    }
+  }
+  mysql_rwlock_unlock(&LOCK_ac);
+}
+
+void AC::update_max_waiting_queries(ulong val) {
+  mysql_rwlock_wrlock(&LOCK_ac);
+  max_waiting_queries = val;
+  mysql_rwlock_unlock(&LOCK_ac);
+}
+
+void AC::update_max_connections(ulong val) {
+  mysql_rwlock_wrlock(&LOCK_ac);
+  max_connections = val;
+  mysql_rwlock_unlock(&LOCK_ac);
+}
+
+ulong AC::get_max_running_queries() const {
+  mysql_rwlock_rdlock(&LOCK_ac);
+  ulong res = max_running_queries;
+  mysql_rwlock_unlock(&LOCK_ac);
+  return res;
+}
+
+ulong AC::get_max_waiting_queries() const {
+  mysql_rwlock_rdlock(&LOCK_ac);
+  ulong res = max_waiting_queries;
+  mysql_rwlock_unlock(&LOCK_ac);
+  return res;
+}
+
+ulong AC::get_total_running_queries() const {
+  ulonglong res = 0;
+  mysql_rwlock_rdlock(&LOCK_ac);
+  for (const auto &it : ac_map) {
+    auto &ac_info = it.second;
+    mysql_mutex_lock(&ac_info->lock);
+    res += ac_info->running_queries;
+    mysql_mutex_unlock(&ac_info->lock);
+  }
+  mysql_rwlock_unlock(&LOCK_ac);
+  return res;
+}
+
+ulong AC::get_total_waiting_queries() const {
+  ulonglong res = 0;
+  mysql_rwlock_rdlock(&LOCK_ac);
+  for (const auto &it : ac_map) {
+    auto &ac_info = it.second;
+    mysql_mutex_lock(&ac_info->lock);
+    res += ac_info->waiting_queries;
+    mysql_mutex_unlock(&ac_info->lock);
+  }
+  mysql_rwlock_unlock(&LOCK_ac);
+  return res;
+}
+
+/**
+ * @brief Populate admission_control_queue table.
  * @param thd THD
  * @param tables contains the TABLE struct to populate
- *
- * Removes a dropped entity info from the global map.
- *
- * @return 0 on success
- *         1 on failure
+ * @retval 0 on success
+ * @retval 1 on failure
  */
 int fill_ac_queue(THD *thd, TABLE_LIST *tables, Item *) {
   DBUG_ENTER("fill_ac_queue");
@@ -725,4 +921,154 @@ int fill_ac_queue(THD *thd, TABLE_LIST *tables, Item *) {
   mysql_rwlock_unlock(&db_ac->LOCK_ac);
 
   DBUG_RETURN(0);
+}
+
+/**
+ * @brief Populate admission_control_entities table.
+ * @param thd THD
+ * @param tables contains the TABLE struct to populate
+ * @retval 0 on success
+ * @retval 1 on failure
+ */
+int fill_ac_entities(THD *thd, TABLE_LIST *tables, Item *) {
+  DBUG_ENTER("fill_ac_entities");
+  TABLE *table = tables->table;
+  int result = 0;
+
+  mysql_rwlock_rdlock(&db_ac->LOCK_ac);
+  for (const auto &pair : db_ac->ac_map) {
+    const std::string &db = pair.first;
+    const auto &ac_info = pair.second;
+
+    mysql_mutex_lock(&ac_info->lock);
+    ulonglong waiting = ac_info->waiting_queries;
+    ulonglong running = ac_info->running_queries;
+    ulonglong timeout = ac_info->timeout_queries;
+    ulonglong aborted = ac_info->aborted_queries;
+    ulonglong connections = ac_info->connections;
+    ulonglong rejected_connections = ac_info->rejected_connections;
+    mysql_mutex_unlock(&ac_info->lock);
+
+    int f = 0;
+
+    // SCHEMA_NAME
+    table->field[f++]->store(db.c_str(), db.size(), system_charset_info);
+
+    // WAITING_QUERIES
+    table->field[f++]->store(waiting, true);
+
+    // RUNNING_QUERIES
+    table->field[f++]->store(running, true);
+
+    // ABORTED_QUERIES
+    table->field[f++]->store(aborted, true);
+
+    // TIMEOUT_QUERIES
+    table->field[f++]->store(timeout, true);
+
+    // CONNECTIONS
+    table->field[f++]->store(connections, true);
+
+    // REJECTED_CONNECTIONS
+    table->field[f++]->store(rejected_connections, true);
+
+    if (schema_table_store_record(thd, table)) {
+      result = 1;
+      break;
+    }
+  }
+
+  mysql_rwlock_unlock(&db_ac->LOCK_ac);
+
+  DBUG_RETURN(result);
+}
+
+st_ac_node::st_ac_node(THD *thd_arg)
+    : running(false), queued(false), queue(0), thd(thd_arg) {
+  mysql_mutex_init(key_LOCK_ac_node, &lock, MY_MUTEX_INIT_FAST);
+  mysql_cond_init(key_COND_ac_node, &cond);
+}
+
+st_ac_node::~st_ac_node() {
+  mysql_mutex_destroy(&lock);
+  mysql_cond_destroy(&cond);
+}
+
+Ac_info::Ac_info(const std::string &_entity) : entity(_entity) {
+  mysql_mutex_init(key_LOCK_ac_info, &lock, MY_MUTEX_INIT_FAST);
+}
+
+Ac_info::~Ac_info() { mysql_mutex_destroy(&lock); }
+
+const std::string &Ac_info::get_entity() const { return entity; }
+
+AC::AC() { mysql_rwlock_init(key_rwlock_LOCK_ac, &LOCK_ac); }
+
+AC::~AC() { mysql_rwlock_destroy(&LOCK_ac); }
+
+/**
+  @brief Constructor.
+*/
+Ac_switch_guard::Ac_switch_guard(THD *_thd) {
+  thd = _thd;
+
+  if (thd->is_in_ac) multi_tenancy_exit_query(thd);
+
+  // Save ac_info from thd to prepare for switch. If switch fails,
+  // it will be restored on thd.
+  if (thd->ac_node) ac_info.swap(thd->ac_node->ac_info);
+}
+
+/**
+  @brief Destructor commits or rolls back the switch.
+*/
+Ac_switch_guard::~Ac_switch_guard() {
+  if (thd->ac_node) {
+    auto &thd_ac_info = thd->ac_node->ac_info;
+
+    // If switch succeeded then put old connection on thd to be closed;
+    // if failed then close new one which is already on thd.
+    if (committed) ac_info.swap(thd_ac_info);
+
+    if (thd_ac_info) db_ac->close_connection(thd);
+
+    DBUG_ASSERT(!thd_ac_info);
+
+    // Now ac_info is either new connection in successful case, or old one
+    // in failed case. In either case, restore it on thd.
+    if (ac_info) ac_info.swap(thd_ac_info);
+  }
+
+  // Make sure the guard is not left with a connection.
+  DBUG_ASSERT(!ac_info);
+}
+
+/**
+  @brief Switch to new db.
+
+  @param new_db Name of db to switch to.
+
+  @return Error codes below.
+  @retval 0 Switch is performed, or not needed.
+  @retval 1 Switch failed.
+*/
+int Ac_switch_guard::add_connection(const char *new_db) {
+  int ret = 0;
+
+  // Switch is needed in the following cases:
+  //  1. Old db was not set. Covers new connection as well.
+  //  2. New db is not set. Need to close old connection anyway.
+  //  3. New db is not the same as old db.
+  //  4. Current user is super. If previous user wasn't super then
+  //     old connection needs to be closed.
+  bool new_db_empty = !new_db || !new_db[0];
+  do_switch = !ac_info || new_db_empty ||
+              strcmp(ac_info->get_entity().c_str(), new_db) ||
+              thd->security_context()->check_access(SUPER_ACL);
+
+  if (do_switch) {
+    ret = multi_tenancy_add_connection(thd, new_db);
+  }
+
+  return ret;
 }

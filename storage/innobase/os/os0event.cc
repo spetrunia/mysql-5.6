@@ -30,261 +30,12 @@ this program; if not, write to the Free Software Foundation, Inc.,
  Created 2012-09-23 Sunny Bains
  *******************************************************/
 
-#include "os0event.h"
+#include "os0event_impl.h"
+#include "srv0srv.h"
 
-#include <errno.h>
-#include <time.h>
+os_event_support_t *os_support = NULL;
 
-#include "ha_prototypes.h"
-#include "ut0mutex.h"
-#include "ut0new.h"
-
-#ifdef _WIN32
-#include <windows.h>
-#endif /* _WIN32 */
-
-#include <list>
-
-/** The number of microseconds in a second. */
-static const uint64_t MICROSECS_IN_A_SECOND = 1000000;
-
-/** The number of nanoseconds in a second. */
-static const uint64_t NANOSECS_IN_A_SECOND = 1000 * MICROSECS_IN_A_SECOND;
-
-#ifdef _WIN32
-/** Native condition variable. */
-typedef CONDITION_VARIABLE os_cond_t;
-#else
-/** Native condition variable */
-typedef pthread_cond_t os_cond_t;
-#endif /* _WIN32 */
-
-typedef std::list<os_event_t, ut_allocator<os_event_t>> os_event_list_t;
-typedef os_event_list_t::iterator event_iter_t;
-
-/** InnoDB condition variable. */
-struct os_event {
-  os_event(const char *name) UNIV_NOTHROW;
-
-  ~os_event() UNIV_NOTHROW;
-
-  friend void os_event_global_init();
-  friend void os_event_global_destroy();
-
-  /**
-  Destroys a condition variable */
-  void destroy() UNIV_NOTHROW {
-#ifndef _WIN32
-    int ret = pthread_cond_destroy(&cond_var);
-    ut_a(ret == 0);
-#endif /* !_WIN32 */
-
-    mutex.destroy();
-
-    ut_ad(n_objects_alive.fetch_sub(1) != 0);
-  }
-
-  /** Set the event */
-  void set() UNIV_NOTHROW {
-    mutex.enter();
-
-    if (!m_set) {
-      broadcast();
-    }
-
-    mutex.exit();
-  }
-
-  bool try_set() UNIV_NOTHROW {
-    if (mutex.try_lock()) {
-      if (!m_set) {
-        broadcast();
-      }
-
-      mutex.exit();
-
-      return (true);
-    }
-
-    return (false);
-  }
-
-  int64_t reset() UNIV_NOTHROW {
-    mutex.enter();
-
-    if (m_set) {
-      m_set = false;
-    }
-
-    int64_t ret = signal_count;
-
-    mutex.exit();
-
-    return (ret);
-  }
-
-  /**
-  Waits for an event object until it is in the signaled state.
-
-  Typically, if the event has been signalled after the os_event_reset()
-  we'll return immediately because event->m_set == true.
-  There are, however, situations (e.g.: sync_array code) where we may
-  lose this information. For example:
-
-  thread A calls os_event_reset()
-  thread B calls os_event_set()   [event->m_set == true]
-  thread C calls os_event_reset() [event->m_set == false]
-  thread A calls os_event_wait()  [infinite wait!]
-  thread C calls os_event_wait()  [infinite wait!]
-
-  Where such a scenario is possible, to avoid infinite wait, the
-  value returned by reset() should be passed in as
-  reset_sig_count. */
-  void wait_low(int64_t reset_sig_count) UNIV_NOTHROW;
-
-  /**
-  Waits for an event object until it is in the signaled state or
-  a timeout is exceeded.
-  @param time_in_usec timeout in microseconds,
-                  or OS_SYNC_INFINITE_TIME
-  @param reset_sig_count zero or the value returned by
-                  previous call of os_event_reset().
-  @return	0 if success, OS_SYNC_TIME_EXCEEDED if timeout was exceeded */
-  ulint wait_time_low(ulint time_in_usec, int64_t reset_sig_count) UNIV_NOTHROW;
-
-  /** @return true if the event is in the signalled state. */
-  bool is_set() const UNIV_NOTHROW { return (m_set); }
-
- private:
-  /**
-  Initialize a condition variable */
-  void init() UNIV_NOTHROW {
-    mutex.init();
-
-#ifdef _WIN32
-    InitializeConditionVariable(&cond_var);
-#else
-    {
-      int ret;
-
-      ret = pthread_cond_init(&cond_var, &cond_attr);
-      ut_a(ret == 0);
-    }
-#endif /* _WIN32 */
-
-    ut_d(n_objects_alive.fetch_add(1));
-  }
-
-  /**
-  Wait on condition variable */
-  void wait() UNIV_NOTHROW {
-#ifdef _WIN32
-    if (!SleepConditionVariableCS(&cond_var, mutex, INFINITE)) {
-      ut_error;
-    }
-#else
-    {
-      int ret;
-
-      ret = pthread_cond_wait(&cond_var, mutex);
-      ut_a(ret == 0);
-    }
-#endif /* _WIN32 */
-  }
-
-  /**
-  Wakes all threads waiting for condition variable */
-  void broadcast() UNIV_NOTHROW {
-    m_set = true;
-    ++signal_count;
-
-#ifdef _WIN32
-    WakeAllConditionVariable(&cond_var);
-#else
-    {
-      int ret;
-
-      ret = pthread_cond_broadcast(&cond_var);
-      ut_a(ret == 0);
-    }
-#endif /* _WIN32 */
-  }
-
-  /**
-  Wakes one thread waiting for condition variable */
-  void signal() UNIV_NOTHROW {
-#ifdef _WIN32
-    WakeConditionVariable(&cond_var);
-#else
-    {
-      int ret;
-
-      ret = pthread_cond_signal(&cond_var);
-      ut_a(ret == 0);
-    }
-#endif /* _WIN32 */
-  }
-
-  /**
-  Do a timed wait on condition variable.
-  @return true if timed out, false otherwise */
-  bool timed_wait(
-#ifndef _WIN32
-      const timespec *abstime /*!< Timeout. */
-#else
-      DWORD time_in_ms /*!< Timeout in milliseconds. */
-#endif /* !_WIN32 */
-  );
-
-#ifndef _WIN32
-  /** Returns absolute time until which we should wait if
-  we wanted to wait for time_in_usec microseconds since now.
-  This method could be removed if we switched to the usage
-  of std::condition_variable. */
-  struct timespec get_wait_timelimit(ulint time_in_usec);
-#endif /* !_WIN32 */
-
- private:
-  bool m_set;           /*!< this is true when the
-                        event is in the signaled
-                        state, i.e., a thread does
-                        not stop if it tries to wait
-                        for this event */
-  int64_t signal_count; /*!< this is incremented
-                        each time the event becomes
-                        signaled */
-  EventMutex mutex;     /*!< this mutex protects
-                        the next fields */
-
-  os_cond_t cond_var; /*!< condition variable is
-                      used in waiting for the event */
-
-#ifndef _WIN32
-  /** Attributes object passed to pthread_cond_* functions.
-  Defines usage of the monotonic clock if it's available.
-  Initialized once, in the os_event::global_init(), and
-  destroyed in the os_event::global_destroy(). */
-  static pthread_condattr_t cond_attr;
-
-  /** True iff usage of the monotonic clock has been successfuly
-  enabled for the cond_attr object. */
-  static bool cond_attr_has_monotonic_clock;
-#endif /* !_WIN32 */
-
-#ifdef UNIV_DEBUG
-  static std::atomic_size_t n_objects_alive;
-#endif /* UNIV_DEBUG */
-
- public:
-  event_iter_t event_iter; /*!< For O(1) removal from
-                           list */
- protected:
-  // Disable copying
-  os_event(const os_event &);
-  os_event &operator=(const os_event &);
-};
-
-bool os_event::timed_wait(
+bool os_event_struct_t::timed_wait(
 #ifndef _WIN32
     const timespec *abstime
 #else
@@ -318,7 +69,7 @@ bool os_event::timed_wait(
 #else
   int ret;
 
-  ret = pthread_cond_timedwait(&cond_var, mutex, abstime);
+  ret = pthread_cond_timedwait(&sup->cond_var, sup->mutex, abstime);
 
   switch (ret) {
     case 0:
@@ -360,26 +111,26 @@ thread C calls os_event_wait()  [infinite wait!]
 Where such a scenario is possible, to avoid infinite wait, the
 value returned by reset() should be passed in as
 reset_sig_count. */
-void os_event::wait_low(int64_t reset_sig_count) UNIV_NOTHROW {
-  mutex.enter();
+void os_event_struct_t::wait_low(int64_t reset_sig_count) UNIV_NOTHROW {
+  sup->mutex.enter();
 
   if (!reset_sig_count) {
-    reset_sig_count = signal_count;
+    reset_sig_count = SIGNAL_COUNT(this);
   }
 
-  while (!m_set && signal_count == reset_sig_count) {
+  while (!is_set() && SIGNAL_COUNT(this) == reset_sig_count) {
     wait();
 
     /* Spurious wakeups may occur: we have to check if the
     event really has been signaled after we came here to wait. */
   }
 
-  mutex.exit();
+  sup->mutex.exit();
 }
 
 #ifndef _WIN32
 
-struct timespec os_event::get_wait_timelimit(ulint time_in_usec) {
+struct timespec os_event_struct_t::get_wait_timelimit(ulint time_in_usec) {
   /* We could get rid of this function if we switched to std::condition_variable
   from the pthread_cond_. The std::condition_variable::wait_for relies on the
   steady_clock internally and accepts timeout (not time increased by the
@@ -453,8 +204,8 @@ a timeout is exceeded.
 @param reset_sig_count - zero or the value returned by previous call
         of os_event_reset().
 @return	0 if success, OS_SYNC_TIME_EXCEEDED if timeout was exceeded */
-ulint os_event::wait_time_low(ulint time_in_usec,
-                              int64_t reset_sig_count) UNIV_NOTHROW {
+ulint os_event_struct_t::wait_time_low(ulint time_in_usec,
+                                       int64_t reset_sig_count) UNIV_NOTHROW {
   bool timed_out = false;
 
 #ifdef _WIN32
@@ -469,7 +220,7 @@ ulint os_event::wait_time_low(ulint time_in_usec,
   struct timespec abstime;
 
   if (time_in_usec != OS_SYNC_INFINITE_TIME) {
-    abstime = os_event::get_wait_timelimit(time_in_usec);
+    abstime = os_event_struct_t::get_wait_timelimit(time_in_usec);
   } else {
     abstime.tv_nsec = 999999999;
     abstime.tv_sec = std::numeric_limits<time_t>::max();
@@ -479,14 +230,14 @@ ulint os_event::wait_time_low(ulint time_in_usec,
 
 #endif /* _WIN32 */
 
-  mutex.enter();
+  sup->mutex.enter();
 
   if (!reset_sig_count) {
-    reset_sig_count = signal_count;
+    reset_sig_count = SIGNAL_COUNT(this);
   }
 
   do {
-    if (m_set || signal_count != reset_sig_count) {
+    if (is_set() || SIGNAL_COUNT(this) != reset_sig_count) {
       break;
     }
 
@@ -498,31 +249,45 @@ ulint os_event::wait_time_low(ulint time_in_usec,
 
   } while (!timed_out);
 
-  mutex.exit();
+  sup->mutex.exit();
 
   return (timed_out ? OS_SYNC_TIME_EXCEEDED : 0);
 }
 
 /** Constructor */
-os_event::os_event(const char *name) UNIV_NOTHROW {
-  init();
-
-  m_set = false;
-
-  /* We return this value in os_event_reset(),
-  which can then be be used to pass to the
-  os_event_wait_low(). The value of zero is
-  reserved in os_event_wait_low() for the case
-  when the caller does not want to pass any
-  signal_count value. To distinguish between
-  the two cases we initialize signal_count
-  to 1 here. */
-
-  signal_count = 1;
-}
+os_event_struct_t::os_event_struct(const char *name) UNIV_NOTHROW {}
 
 /** Destructor */
-os_event::~os_event() UNIV_NOTHROW { destroy(); }
+os_event_struct::~os_event_struct() UNIV_NOTHROW {}
+
+/*********************************************************/ /**
+ Initializes underlying os_support structure for events. */
+void os_support_init(os_event_support_t *ev_sup) {
+  new (&ev_sup->mutex) OSMutex();
+  ev_sup->mutex.init();
+
+#ifdef _WIN32
+  InitializeConditionVariable(&cond_var);
+#else
+  {
+    int ret;
+
+    ret = pthread_cond_init(&ev_sup->cond_var, &os_event_struct_t::cond_attr);
+    ut_a(ret == 0);
+  }
+#endif /* _WIN32 */
+}
+
+/*********************************************************/ /**
+ Destroys underlying os_support structure for events. */
+void os_support_destroy(os_event_support_t *ev_sup) {
+#ifndef _WIN32
+  int ret = pthread_cond_destroy(&ev_sup->cond_var);
+  ut_a(ret == 0);
+#endif /* !_WIN32 */
+
+  ev_sup->mutex.destroy();
+}
 
 /**
 Creates an event semaphore, i.e., a semaphore which may just have two
@@ -533,7 +298,16 @@ os_event_t os_event_create(const char *name) /*!< in: the name of the
                                              event, if NULL the event
                                              is created without a name */
 {
-  os_event_t ret = (UT_NEW_NOKEY(os_event(name)));
+  os_event_t ret = (UT_NEW_NOKEY(os_event_struct_t(name)));
+
+  os_event_create2(ret);
+
+  /*Note: this overwrites the "sup" element, that was pointed to a
+   shared sync data pool element by os_event_create2, with a
+   dynamically-allocated set of data exclusively for this event. */
+  ret->sup = (os_event_support_t *)ut_malloc_nokey(sizeof(os_event_support_t));
+
+  os_support_init(ret->sup);
 /**
  On SuSE Linux we get spurious EBUSY from pthread_mutex_destroy()
  unless we grab and release the mutex here. Current OS version:
@@ -544,6 +318,21 @@ os_event_t os_event_create(const char *name) /*!< in: the name of the
   os_event_reset(ret);
 #endif
   return ret;
+}
+
+void os_event_create2(os_event_t event) {
+  static uint64_t os_event_counter = 0;
+  ut_d(event->n_objects_alive.fetch_add(1));
+  event->init_stats();
+
+  /*Note: this sets the "sup" element to point to a shared sync data
+    pool element.  The event itself is not shared, but the underlying
+    OS data used by them is.  Using a smaller shared pool of these
+    elements saves a great deal of memory.  This is only done for the
+    buffer pool events.  The other events call os_event_create(), and
+    this will be overwritten if this was called via os_event_create. */
+  event->sup = os_support + (os_event_counter % srv_sync_pool_size);
+  os_event_counter++;
 }
 
 /**
@@ -609,55 +398,81 @@ void os_event_wait_low(os_event_t event,        /*!< in: event to wait */
 /**
 Frees an event object. */
 void os_event_destroy(os_event_t &event) /*!< in/own: event to free */
-
 {
   if (event != NULL) {
+    os_support_destroy(event->sup);
+    event->dec_obj_count();
+    UT_DELETE(event->sup);
     UT_DELETE(event);
     event = NULL;
   }
 }
 
+/**
+Frees an event object pointing to sync pool */
+void os_event_destroy2(os_event_t event) /*!< in/own: event to free */
+{
+  if (event != NULL) {
+    event->dec_obj_count();
+    ut_a(event->sup >= os_support &&
+         event->sup < (os_support + srv_sync_pool_size));
+    event->sup = NULL;
+  }
+}
+
 #ifndef _WIN32
-pthread_condattr_t os_event::cond_attr;
-bool os_event::cond_attr_has_monotonic_clock{false};
+pthread_condattr_t os_event_struct_t::cond_attr;
+bool os_event_struct_t::cond_attr_has_monotonic_clock{false};
 #endif /* !_WIN32 */
 
 #ifdef UNIV_DEBUG
-std::atomic_size_t os_event::n_objects_alive{0};
+std::atomic_size_t os_event_struct_t::n_objects_alive{0};
 #endif /* UNIV_DEBUG */
 
 void os_event_global_init(void) {
-  ut_ad(os_event::n_objects_alive.load() == 0);
+  ut_ad(os_event_struct_t::n_objects_alive.load() == 0);
 #ifndef _WIN32
-  int ret = pthread_condattr_init(&os_event::cond_attr);
+  int ret = pthread_condattr_init(&os_event_struct_t::cond_attr);
   ut_a(ret == 0);
 
 #ifdef UNIV_LINUX /* MacOS does not have support. */
 #ifdef HAVE_CLOCK_GETTIME
-  ret = pthread_condattr_setclock(&os_event::cond_attr, CLOCK_MONOTONIC);
+  ret =
+      pthread_condattr_setclock(&os_event_struct_t::cond_attr, CLOCK_MONOTONIC);
   if (ret == 0) {
-    os_event::cond_attr_has_monotonic_clock = true;
+    os_event_struct_t::cond_attr_has_monotonic_clock = true;
   }
 #endif /* HAVE_CLOCK_GETTIME */
 
 #ifndef UNIV_NO_ERR_MSGS
-  if (!os_event::cond_attr_has_monotonic_clock) {
+  if (!os_event_struct_t::cond_attr_has_monotonic_clock) {
     ib::warn(ER_IB_MSG_CLOCK_MONOTONIC_UNSUPPORTED);
   }
 #endif /* !UNIV_NO_ERR_MSGS */
 
 #endif /* UNIV_LINUX */
+  os_support = (os_event_support_t *)ut_malloc_nokey(
+      sizeof(os_event_support_t) * srv_sync_pool_size);
+  for (unsigned int i = 0; i < srv_sync_pool_size; ++i) {
+    os_support_init(os_support + i);
+  }
 #endif /* !_WIN32 */
 }
 
 void os_event_global_destroy(void) {
-  ut_ad(os_event::n_objects_alive.load() == 0);
+  for (unsigned int i = 0; i < srv_sync_pool_size; ++i) {
+    os_support_destroy(os_support + i);
+  }
+
+  if (os_support != NULL) ut_free(os_support);
+
+  ut_ad(os_event_struct_t::n_objects_alive.load() == 0);
 #ifndef _WIN32
-  os_event::cond_attr_has_monotonic_clock = false;
+  os_event_struct_t::cond_attr_has_monotonic_clock = false;
 #ifdef UNIV_DEBUG
   const int ret =
 #endif /* UNIV_DEBUG */
-      pthread_condattr_destroy(&os_event::cond_attr);
+      pthread_condattr_destroy(&os_event_struct_t::cond_attr);
   ut_ad(ret == 0);
 #endif /* !_WIN32 */
 }

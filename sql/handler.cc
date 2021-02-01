@@ -264,6 +264,8 @@ static bool check_engine_system_table_handlerton(THD *unused, plugin_ref plugin,
 static int ha_discover(THD *thd, const char *db, const char *name,
                        uchar **frmblob, size_t *frmlen);
 
+static void check_dml_execution_cpu_limit_exceeded(int *error, THD *thd);
+
 /**
   Structure used by SE during check for system table.
   This structure is passed to each SE handlerton and the status (OUT param)
@@ -646,6 +648,10 @@ int ha_init_errors(void) {
   SETMSG(HA_ERR_NO_SESSION_TEMP, ER_DEFAULT(ER_NO_SESSION_TEMP));
   SETMSG(HA_ERR_WRONG_TABLE_NAME, ER_DEFAULT(ER_WRONG_TABLE_NAME));
   SETMSG(HA_ERR_TOO_LONG_PATH, ER_DEFAULT(ER_TABLE_NAME_CAUSES_TOO_LONG_PATH));
+  SETMSG(HA_ERR_WRITE_CPU_LIMIT_EXCEEDED,
+         ER_DEFAULT(ER_WARN_WRITE_EXCEEDED_CPU_LIMIT_MILLISECONDS));
+  SETMSG(HA_ERR_MAX_TMP_DISK_USAGE_EXCEEDED,
+         ER_DEFAULT(ER_MAX_TMP_DISK_USAGE_EXCEEDED));
   /* Register the error messages for use with my_error(). */
   return my_error_register(get_handler_errmsg, HA_ERR_FIRST, HA_ERR_LAST);
 }
@@ -2730,9 +2736,52 @@ err:
   DBUG_RETURN(NULL);
 }
 
+/**
+  Check if a table specified by name is a system table.
+
+  @param db                    Database name for the table.
+  @param table_name            Table name to be checked.
+  @param [out] is_sql_layer_system_table  True if a system table belongs to
+  sql_layer.
+
+  @return Operation status
+    @retval  true              If the table name is a system table.
+    @retval  false             If the table name is a user-level table.
+*/
+
+static bool check_if_system_table(const char *db, const char *table_name,
+                                  bool *is_sql_layer_system_table) {
+  st_handler_tablename *systab;
+
+  // Check if we have the system database name in the command.
+  if (!dd::get_dictionary()->is_dd_schema_name(db)) return false;
+
+  // Check if this is SQL layer system tables.
+  systab = mysqld_system_tables;
+  while (systab && systab->db) {
+    if (strcmp(systab->tablename, table_name) == 0) {
+      *is_sql_layer_system_table = true;
+      break;
+    }
+
+    systab++;
+  }
+
+  return true;
+}
+
+static bool yield_condition(TABLE *table) {
+  bool unused;
+  return !check_if_system_table(table->s->db.str, table->s->table_name.str,
+                                &unused);
+}
+
 void handler::ha_statistic_increment(
     ulonglong System_status_var::*offset) const {
-  if (table && table->in_use) (table->in_use->status_var.*offset)++;
+  if (table && table->in_use) {
+    (table->in_use->status_var.*offset)++;
+    table->in_use->check_yield(std::bind(yield_condition, table));
+  }
 }
 
 THD *handler::ha_thd(void) const {
@@ -4504,6 +4553,12 @@ void handler::print_error(int error, myf errflag) {
     case HA_ERR_TOO_LONG_PATH:
       textno = ER_TABLE_NAME_CAUSES_TOO_LONG_PATH;
       break;
+    case HA_ERR_WRITE_CPU_LIMIT_EXCEEDED:
+      textno = ER_WARN_WRITE_EXCEEDED_CPU_LIMIT_MILLISECONDS;
+      break;
+    case HA_ERR_MAX_TMP_DISK_USAGE_EXCEEDED:
+      textno = ER_MAX_TMP_DISK_USAGE_EXCEEDED;
+      break;
     default: {
       /* The error was "unknown" to this function.
          Ask handler if it has got a message for this error */
@@ -5438,40 +5493,6 @@ bool ha_check_if_table_exists(THD *thd, const char *db, const char *name,
 }
 
 /**
-  Check if a table specified by name is a system table.
-
-  @param db                    Database name for the table.
-  @param table_name            Table name to be checked.
-  @param [out] is_sql_layer_system_table  True if a system table belongs to
-  sql_layer.
-
-  @return Operation status
-    @retval  true              If the table name is a system table.
-    @retval  false             If the table name is a user-level table.
-*/
-
-static bool check_if_system_table(const char *db, const char *table_name,
-                                  bool *is_sql_layer_system_table) {
-  st_handler_tablename *systab;
-
-  // Check if we have the system database name in the command.
-  if (!dd::get_dictionary()->is_dd_schema_name(db)) return false;
-
-  // Check if this is SQL layer system tables.
-  systab = mysqld_system_tables;
-  while (systab && systab->db) {
-    if (strcmp(systab->tablename, table_name) == 0) {
-      *is_sql_layer_system_table = true;
-      break;
-    }
-
-    systab++;
-  }
-
-  return true;
-}
-
-/**
   @brief Check if a given table is a system table.
 
   @details The primary purpose of introducing this function is to stop system
@@ -6356,6 +6377,8 @@ ha_rows handler::multi_range_read_info_const(
   seq_it = seq->init(seq_init_param, n_ranges, *flags);
   while (!seq->next(seq_it, &range)) {
     if (unlikely(thd->killed != 0)) return HA_POS_ERROR;
+
+    thd->check_yield(std::bind(yield_condition, table));
 
     n_ranges++;
     key_range *min_endp, *max_endp;
@@ -8081,6 +8104,11 @@ int handler::ha_write_row(uchar *buf) {
 
   table->in_use->inc_inserted_row_count(1);
 
+  /* check if the cpu execution time limit for DML is exceeded */
+  check_dml_execution_cpu_limit_exceeded(&error, thd);
+
+  if (unlikely(error)) DBUG_RETURN(error);
+
   if (unlikely((error = binlog_log_row(table, 0, buf, log_func))))
     DBUG_RETURN(error); /* purecov: inspected */
 
@@ -8120,6 +8148,11 @@ int handler::ha_update_row(const uchar *old_data, uchar *new_data) {
 
   table->in_use->inc_updated_row_count(1);
 
+  /* check if the cpu execution time limit for DML is exceeded */
+  check_dml_execution_cpu_limit_exceeded(&error, thd);
+
+  if (unlikely(error)) return error;
+
   if (unlikely((error = binlog_log_row(table, old_data, new_data, log_func))))
     return error;
   return 0;
@@ -8153,6 +8186,11 @@ int handler::ha_delete_row(const uchar *buf) {
 
   if (unlikely(error)) return error;
   table->in_use->inc_deleted_row_count(1);
+
+  /* check if the cpu execution time limit for DML is exceeded */
+  check_dml_execution_cpu_limit_exceeded(&error, thd);
+
+  if (unlikely(error)) return error;
 
   if (unlikely((error = binlog_log_row(table, buf, 0, log_func)))) return error;
   return 0;
@@ -9379,4 +9417,23 @@ void warn_about_bad_patterns(const Regex_list_handler* regex_list_handler,
   // NO_LINT_DEBUG
   sql_print_warning("Invalid pattern in %s: %s", name,
                     regex_list_handler->bad_pattern().c_str());
+}
+
+/**
+  Checks if the dml query exceeded CPU limit.
+
+  @param  error         Error code
+  @param  thd           Current thread
+*/
+static void check_dml_execution_cpu_limit_exceeded(int *error, THD *thd) {
+  /* check if the cpu execution time limit for DML is exceeded */
+  if (!(*error) && thd->dml_execution_cpu_limit_exceeded()) {
+    /* raise error */
+    (*error) = HA_ERR_WRITE_CPU_LIMIT_EXCEEDED;
+    /* log the abort query details into performance_schema.write_throttling_log
+     */
+    store_long_qry_abort_log(thd);
+    /* rollback the transaction */
+    thd->mark_transaction_to_rollback(true);
+  }
 }

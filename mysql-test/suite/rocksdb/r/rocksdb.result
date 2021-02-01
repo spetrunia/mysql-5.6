@@ -899,6 +899,7 @@ rocksdb_allow_concurrent_memtable_write	OFF
 rocksdb_allow_mmap_reads	OFF
 rocksdb_allow_mmap_writes	OFF
 rocksdb_allow_to_start_after_corruption	OFF
+rocksdb_alter_column_default_inplace	ON
 rocksdb_blind_delete_primary_key	OFF
 rocksdb_block_cache_size	536870912
 rocksdb_block_restart_interval	16
@@ -1037,7 +1038,9 @@ rocksdb_table_stats_sampling_pct	10
 rocksdb_table_stats_use_table_scan	OFF
 rocksdb_tmpdir	
 rocksdb_trace_block_cache_access	
+rocksdb_trace_queries	
 rocksdb_trace_sst_api	OFF
+rocksdb_track_and_verify_wals_in_manifest	ON
 rocksdb_two_write_queues	ON
 rocksdb_unsafe_for_binlog	OFF
 rocksdb_update_cf_options	
@@ -1056,6 +1059,7 @@ rocksdb_wal_recovery_mode	2
 rocksdb_wal_size_limit_mb	0
 rocksdb_wal_ttl_seconds	0
 rocksdb_whole_key_filtering	ON
+rocksdb_write_batch_flush_threshold	0
 rocksdb_write_batch_max_bytes	0
 rocksdb_write_disable_wal	OFF
 rocksdb_write_ignore_missing_column_families	OFF
@@ -1563,6 +1567,7 @@ rocksdb_rows_updated	#
 rocksdb_rows_deleted_blind	#
 rocksdb_rows_expired	#
 rocksdb_rows_filtered	#
+rocksdb_rows_unfiltered_no_snapshot	#
 rocksdb_system_rows_deleted	#
 rocksdb_system_rows_inserted	#
 rocksdb_system_rows_read	#
@@ -1760,6 +1765,7 @@ ROCKSDB_ROWS_EXPIRED
 ROCKSDB_ROWS_FILTERED
 ROCKSDB_ROWS_INSERTED
 ROCKSDB_ROWS_READ
+ROCKSDB_ROWS_UNFILTERED_NO_SNAPSHOT
 ROCKSDB_ROWS_UPDATED
 ROCKSDB_ROW_LOCK_DEADLOCKS
 ROCKSDB_ROW_LOCK_WAIT_TIMEOUTS
@@ -1882,6 +1888,7 @@ ROCKSDB_ROWS_EXPIRED
 ROCKSDB_ROWS_FILTERED
 ROCKSDB_ROWS_INSERTED
 ROCKSDB_ROWS_READ
+ROCKSDB_ROWS_UNFILTERED_NO_SNAPSHOT
 ROCKSDB_ROWS_UPDATED
 ROCKSDB_ROW_LOCK_DEADLOCKS
 ROCKSDB_ROW_LOCK_WAIT_TIMEOUTS

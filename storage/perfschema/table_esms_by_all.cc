@@ -32,6 +32,7 @@
 
 #include "my_dbug.h"
 #include "my_md5.h"
+#include "include/my_md5_size.h"
 #include "my_thread.h"
 #include "sql/field.h"
 #include "sql/plugin_table.h"
@@ -58,8 +59,8 @@ Plugin_table table_esms_by_all::m_table_def(
     "  DIGEST VARCHAR(64),\n"
     "  DIGEST_TEXT LONGTEXT,\n"
     "  USER VARCHAR(80),\n"
-    "  CLIENT_ID VARCHAR(64),\n"
-    "  PLAN_ID VARCHAR(64),\n"
+    "  CLIENT_ID VARCHAR(32),\n"
+    "  PLAN_ID VARCHAR(32),\n"
     "  COUNT_STAR BIGINT unsigned not null,\n"
     "  SUM_TIMER_WAIT BIGINT unsigned not null,\n"
     "  MIN_TIMER_WAIT BIGINT unsigned not null,\n"
@@ -94,6 +95,9 @@ Plugin_table table_esms_by_all::m_table_def(
     "  SUM_INDEX_DIVE_CPU BIGINT unsigned not null,\n"
     "  SUM_COMPILATION_CPU BIGINT unsigned not null,\n"
     "  SUM_ELAPSED_TIME BIGINT unsigned not null,\n"
+    "  SUM_SKIPPED BIGINT unsigned not null,\n"
+    "  SUM_FILESORT_DISK_USAGE BIGINT unsigned not null,\n"
+    "  SUM_TMP_TABLE_DISK_USAGE BIGINT unsigned not null,\n"
     "  FIRST_SEEN TIMESTAMP(6) NOT NULL default 0,\n"
     "  LAST_SEEN TIMESTAMP(6) NOT NULL default 0,\n"
     "  QUANTILE_95 BIGINT unsigned not null,\n"
@@ -241,9 +245,9 @@ int table_esms_by_all::make_row(PFS_statements_digest_stat *digest_stat) {
            m_row.m_user_name_length);
   array_to_hex(m_row.client_id, digest_stat->m_digest_key.client_id,
                MD5_HASH_SIZE);
-  m_row.client_id[MD5_HASH_SIZE * 2] = '\0';
+  m_row.client_id[MD5_HASH_TO_STRING_LENGTH] = '\0';
   array_to_hex(m_row.plan_id, digest_stat->m_digest_key.plan_id, MD5_HASH_SIZE);
-  m_row.plan_id[MD5_HASH_SIZE * 2] = '\0';
+  m_row.plan_id[MD5_HASH_TO_STRING_LENGTH] = '\0';
 
   /*
     Get statements stats.
@@ -360,22 +364,22 @@ int table_esms_by_all::read_row_values(TABLE *table, unsigned char *buf,
             f->set_null();
           }
           break;
-        case 40: /* FIRST_SEEN */
+        case 43: /* FIRST_SEEN */
           set_field_timestamp(f, m_row.m_first_seen);
           break;
-        case 41: /* LAST_SEEN */
+        case 44: /* LAST_SEEN */
           set_field_timestamp(f, m_row.m_last_seen);
           break;
-        case 42: /* QUANTILE_95 */
+        case 45: /* QUANTILE_95 */
           set_field_ulonglong(f, m_row.m_p95);
           break;
-        case 43: /* QUANTILE_99 */
+        case 46: /* QUANTILE_99 */
           set_field_ulonglong(f, m_row.m_p99);
           break;
-        case 44: /* QUANTILE_999 */
+        case 47: /* QUANTILE_999 */
           set_field_ulonglong(f, m_row.m_p999);
           break;
-        case 45: /* QUERY_SAMPLE_TEXT */
+        case 48: /* QUERY_SAMPLE_TEXT */
           if (m_row.m_query_sample.length())
             set_field_text(f, m_row.m_query_sample.ptr(),
                            m_row.m_query_sample.length(),
@@ -384,10 +388,10 @@ int table_esms_by_all::read_row_values(TABLE *table, unsigned char *buf,
             f->set_null();
           }
           break;
-        case 46: /* QUERY_SAMPLE_SEEN */
+        case 49: /* QUERY_SAMPLE_SEEN */
           set_field_timestamp(f, m_row.m_query_sample_seen);
           break;
-        case 47: /* QUERY_SAMPLE_TIMER_WAIT */
+        case 50: /* QUERY_SAMPLE_TIMER_WAIT */
           set_field_ulonglong(f, m_row.m_query_sample_timer_wait);
           break;
         default: /* 3, ... COUNT/SUM/MIN/AVG/MAX */

@@ -111,6 +111,12 @@ static void set_thread_THD_noop(PSI_thread *, THD *) { return; }
 
 static void set_thread_os_id_noop(PSI_thread *) { return; }
 
+static ulonglong get_thread_os_id_noop(PSI_thread *) { return 0; }
+
+static void set_thread_priority_noop(PSI_thread *, int) { return; }
+
+static int get_thread_priority_noop(PSI_thread *) { return 0; }
+
 static PSI_thread *get_thread_noop(void) { return NULL; }
 
 static void set_thread_user_noop(const char *, int) { return; }
@@ -202,6 +208,9 @@ static PSI_thread_service_t psi_thread_noop = {
     get_thread_by_id_noop,
     set_thread_THD_noop,
     set_thread_os_id_noop,
+    get_thread_os_id_noop,
+    set_thread_priority_noop,
+    get_thread_priority_noop,
     get_thread_noop,
     set_thread_user_noop,
     set_thread_user_host_noop,
@@ -743,6 +752,16 @@ static void set_statement_no_good_index_used_noop(PSI_statement_locker *) {
   return;
 }
 
+static void update_statement_filesort_disk_usage_noop(PSI_statement_locker *,
+                                                      ulonglong) {
+  return;
+}
+
+static void update_statement_tmp_table_disk_usage_noop(PSI_statement_locker *,
+                                                       ulonglong) {
+  return;
+}
+
 static void end_statement_noop(PSI_statement_locker *, void *) { return; }
 
 static PSI_prepared_stmt *create_prepared_stmt_noop(void *, uint,
@@ -824,6 +843,8 @@ static PSI_statement_service_t psi_statement_noop = {
     inc_statement_sort_scan_noop,
     set_statement_no_index_used_noop,
     set_statement_no_good_index_used_noop,
+    update_statement_filesort_disk_usage_noop,
+    update_statement_tmp_table_disk_usage_noop,
     end_statement_noop,
     create_prepared_stmt_noop,
     destroy_prepared_stmt_noop,

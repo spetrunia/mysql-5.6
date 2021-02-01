@@ -47,6 +47,7 @@
 
 #include "dur_prop.h"
 #include "field_types.h"  // enum_field_types
+#include "include/my_md5.h"
 #include "m_ctype.h"
 #include "m_string.h"
 #include "my_alloc.h"
@@ -152,6 +153,7 @@
 #include "sql/sql_error.h"
 #include "sql/sql_handler.h"  // mysql_ha_rm_tables
 #include "sql/sql_help.h"     // mysqld_help
+#include "sql/sql_info.h"
 #include "sql/sql_lex.h"
 #include "sql/sql_list.h"
 #include "sql/sql_prepare.h"  // mysql_stmt_execute
@@ -215,7 +217,8 @@ using std::max;
        ? "FUNCTION"                                        \
        : "PROCEDURE")
 
-static void sql_kill(THD *thd, my_thread_id id, bool only_kill_query);
+static void sql_kill(THD *thd, my_thread_id id, bool only_kill_query,
+                     const char *reason = nullptr);
 
 const LEX_STRING command_name[] = {
     {C_STRING_WITH_LEN("Sleep")},
@@ -1801,7 +1804,7 @@ static std::shared_ptr<utils::PerfCounterFactory> pc_factory =
   update_mt_stmt_stats
     Method to update any multi tenancy stats after execution of each stmt
 */
-static void update_mt_stmt_stats(THD *thd) {
+static void update_mt_stmt_stats(THD *thd, char *sub_query) {
   /* Update write statistics if stats collection is turned on and
     this stmt wrote binlog bytes
   */
@@ -1810,6 +1813,12 @@ static void update_mt_stmt_stats(THD *thd) {
     thd->set_stmt_total_write_time();
     store_write_statistics(thd);
   }
+
+  if (sql_findings_control == SQL_INFO_CONTROL_ON)
+    store_sql_findings(thd, sub_query);
+
+  thd->mt_key_clear(THD::SQL_ID);
+  thd->mt_key_clear(THD::SQL_HASH);
 }
 
 /**
@@ -1956,8 +1965,7 @@ bool dispatch_command(THD *thd, const COM_DATA *com_data,
                           com_data->com_init_db.db_name,
                           com_data->com_init_db.length, thd->charset());
 
-      LEX_CSTRING tmp_cstr = {tmp.str, tmp.length};
-      if (!mysql_change_db(thd, tmp_cstr, false)) {
+      if (!set_session_db_helper(thd, to_lex_cstring(tmp))) {
         query_logger.general_log_write(thd, command, thd->db().str,
                                        thd->db().length);
         my_ok(thd);
@@ -2180,6 +2188,10 @@ bool dispatch_command(THD *thd, const COM_DATA *com_data,
       thd->set_secondary_engine_optimization(
           Secondary_engine_optimization::PRIMARY_TENTATIVELY);
 
+      const char *beginning_of_current_stmt = thd->query().str;
+      char sub_query[1025];  // 1024 bytes + '\0'
+      int sub_query_byte_length;
+
       mysql_parse(thd, &parser_state, &last_timer);
 
       // Check if the statement failed and needs to be restarted in
@@ -2203,6 +2215,12 @@ bool dispatch_command(THD *thd, const COM_DATA *com_data,
         */
         const char *beginning_of_next_stmt = parser_state.m_lip.found_semicolon;
 
+        sub_query_byte_length = static_cast<int>(beginning_of_next_stmt -
+                                                 beginning_of_current_stmt);
+        sub_query_byte_length = std::min(sub_query_byte_length, 1024);
+        memcpy(sub_query, beginning_of_current_stmt, sub_query_byte_length);
+        sub_query[sub_query_byte_length] = '\0';
+
         /*
           Update MT stats.
           For multi-query statements, MT stats should be updated after every
@@ -2212,7 +2230,7 @@ bool dispatch_command(THD *thd, const COM_DATA *com_data,
           The stats updated here will be for the first statement of the
           multi-query set.
         */
-        update_mt_stmt_stats(thd);
+        update_mt_stmt_stats(thd, sub_query);
 
         /* Finalize server status flags after executing a statement. */
         thd->finalize_session_trackers();
@@ -2278,6 +2296,7 @@ bool dispatch_command(THD *thd, const COM_DATA *com_data,
         thd->set_secondary_engine_optimization(
             Secondary_engine_optimization::PRIMARY_TENTATIVELY);
         /* TODO: set thd->lex->sql_command to SQLCOM_END here */
+        beginning_of_current_stmt = beginning_of_next_stmt;
         mysql_parse(thd, &parser_state, &last_timer);
 
         check_secondary_engine_statement(
@@ -2286,6 +2305,11 @@ bool dispatch_command(THD *thd, const COM_DATA *com_data,
         thd->set_secondary_engine_optimization(saved_secondary_engine);
       }
 
+      sub_query_byte_length =
+          static_cast<int>(packet_end - beginning_of_current_stmt);
+      sub_query_byte_length = std::min(sub_query_byte_length, 1024);
+      memcpy(sub_query, beginning_of_current_stmt, sub_query_byte_length);
+      sub_query[sub_query_byte_length] = '\0';
       /*
         Update MT stats.
         If multi-query: The stats updated here will be for the last statement
@@ -2293,17 +2317,13 @@ bool dispatch_command(THD *thd, const COM_DATA *com_data,
         If not multi-query: The stats updated here will be fore the entire
           statement.
       */
-      update_mt_stmt_stats(thd);
+      update_mt_stmt_stats(thd, sub_query);
 
       if (thd->is_in_ac &&
           (!opt_admission_control_by_trx ||
            !thd->get_transaction()->is_active(
                Transaction_ctx::SESSION) /* thd->is_real_trans equivalent */)) {
-        MT_RESOURCE_ATTRS attrs = {&thd->connection_attrs_map,
-                                   &thd->query_attrs_list, thd->db().str};
-        multi_tenancy_exit_query(thd, &attrs);
-
-        thd->is_in_ac = false;
+        multi_tenancy_exit_query(thd);
       }
 
       /* Need to set error to true for graceful shutdown */
@@ -2641,9 +2661,14 @@ done:
 
   thd->reset_query();
   thd->reset_query_attrs();
+  thd->mt_key_clear(THD::CLIENT_ID);
   thd->set_command(COM_SLEEP);
   thd->proc_info = 0;
   thd->lex->sql_command = SQLCOM_END;
+
+  /* Propagate remaining disk usage to global status after the command so
+     that session and global status vars agree with each other. */
+  thd->propagate_pending_global_disk_usage();
 
   /* Performance Schema Interface instrumentation, end */
   thd->set_cpu_time();
@@ -4160,9 +4185,8 @@ int mysql_execute_command(THD *thd, bool first_level, ulonglong *last_timer) {
       break;
     }
     case SQLCOM_CHANGE_DB: {
-      const LEX_CSTRING db_str = {select_lex->db, strlen(select_lex->db)};
-
-      if (!mysql_change_db(thd, db_str, false)) my_ok(thd);
+      if (!set_session_db_helper(thd, to_lex_cstring(select_lex->db)))
+        my_ok(thd);
 
       break;
     }
@@ -4657,7 +4681,8 @@ int mysql_execute_command(THD *thd, bool first_level, ulonglong *last_timer) {
       my_thread_id thread_id = static_cast<my_thread_id>(it->val_int());
       if (thd->is_error()) goto error;
 
-      sql_kill(thd, thread_id, lex->type & ONLY_KILL_QUERY);
+      sql_kill(thd, thread_id, lex->type & ONLY_KILL_QUERY,
+               lex->kill_reason.length > 0 ? lex->kill_reason.str : nullptr);
       break;
     }
     case SQLCOM_SHOW_PRIVILEGES: {
@@ -5752,6 +5777,11 @@ void THD::reset_for_next_command() {
   thd->m_sent_row_count = thd->m_examined_row_count = 0;
 
   thd->reset_stmt_stats();
+  if (!thd->get_transaction()->is_active(Transaction_ctx::SESSION)) {
+    thd->set_trx_dml_row_count(0);
+    thd->set_trx_dml_cpu_time_limit_warning(false);
+    thd->m_trx_dml_start_time_is_set = false;
+  }
 
   thd->reset_current_stmt_binlog_format_row();
   thd->binlog_unsafe_warning_flags = 0;
@@ -5852,8 +5882,13 @@ static bool mt_check_throttle_write_query(THD *thd) {
     DBUG_RETURN(false);
   }
 
+  bool debug_skip_auto_throttle_check = false;
+  DBUG_EXECUTE_IF("dbug.add_write_stats_to_most_recent_bucket",
+                  { debug_skip_auto_throttle_check = true; });
+
   // check if its time to check replication lag
-  if (write_stats_capture_enabled() && write_auto_throttle_frequency > 0) {
+  if (write_stats_capture_enabled() && write_auto_throttle_frequency > 0 &&
+      !debug_skip_auto_throttle_check) {
     time_t time_now = my_time(0);
     if (time_now - last_replication_lag_check_time >=
         (long)write_auto_throttle_frequency) {
@@ -5880,11 +5915,11 @@ static bool mt_check_throttle_write_query(THD *thd) {
     auto iter = global_write_throttling_rules[i].find(keys[i]);
     if (iter != global_write_throttling_rules[i].end()) {
       WRITE_THROTTLING_RULE &rule = iter->second;
-      store_write_throttling_log(thd, i, iter->first, rule);
       if (iter->second.mode == WTR_MANUAL ||
           (!thd->variables.write_throttle_tag_only &&
            write_control_level == CONTROL_LEVEL_ERROR) ||
           mt_throttle_tag_level == CONTROL_LEVEL_ERROR) {
+        store_write_throttling_log(thd, i, iter->first, rule);
         my_error(ER_WRITE_QUERY_THROTTLED, MYF(0));
         mysql_mutex_unlock(&LOCK_global_write_throttling_rules);
         DBUG_RETURN(true);
@@ -5892,6 +5927,7 @@ static bool mt_check_throttle_write_query(THD *thd) {
                   (write_control_level == CONTROL_LEVEL_NOTE ||
                    write_control_level == CONTROL_LEVEL_WARN)) ||
                  mt_throttle_tag_level == CONTROL_LEVEL_WARN) {
+        store_write_throttling_log(thd, i, iter->first, rule);
         push_warning(thd,
                      (write_control_level == CONTROL_LEVEL_NOTE ||
                       mt_throttle_tag_level != CONTROL_LEVEL_WARN)
@@ -5945,7 +5981,16 @@ void mysql_parse(THD *thd, Parser_state *parser_state, ulonglong *last_timer) {
     found_semicolon = parser_state->m_lip.found_semicolon;
   }
 
-  bool query_throttled = mt_check_throttle_write_query(thd);
+  /* If the parse was successful then register the current SQL statement
+     in the active list and remember if rejected (throttled)
+  */
+  char  *q_text;
+  size_t q_len;
+  parser_state->get_query(&q_text, &q_len);
+  bool query_throttled = (err) ? false:register_active_sql(thd, q_text, q_len);
+
+  if (!query_throttled)
+    query_throttled = mt_check_throttle_write_query(thd);
 
   if (!err && !query_throttled) {
     /*
@@ -6035,10 +6080,7 @@ void mysql_parse(THD *thd, Parser_state *parser_state, ulonglong *last_timer) {
           bool switched = mgr_ptr->switch_resource_group_if_needed(
               thd, &src_res_grp, &dest_res_grp, &ticket, &cur_ticket);
 
-          MT_RESOURCE_ATTRS attrs = {&thd->connection_attrs_map,
-                                     &thd->query_attrs_list, thd->db().str};
-
-          if (multi_tenancy_admit_query(thd, &attrs)) {
+          if (multi_tenancy_admit_query(thd)) {
             error = 1;
           } else {
             error = mysql_execute_command(thd, true, last_timer);
@@ -6094,6 +6136,9 @@ void mysql_parse(THD *thd, Parser_state *parser_state, ulonglong *last_timer) {
   thd->end_statement();
   thd->cleanup_after_query();
   DBUG_ASSERT(thd->change_list.is_empty());
+
+  // Remove the current statement from the active list
+  remove_active_sql(thd);
 
   DBUG_VOID_RETURN;
 }
@@ -7171,12 +7216,14 @@ const CHARSET_INFO *get_bin_collation(const CHARSET_INFO *cs) {
   @param thd			Thread class
   @param id			Thread id
   @param only_kill_query        Should it kill the query or the connection
+  @param reason The reason why this is killed
 
   @note
     This is written such that we have a short lock on LOCK_thd_list
 */
 
-static uint kill_one_thread(THD *thd, my_thread_id id, bool only_kill_query) {
+static uint kill_one_thread(THD *thd, my_thread_id id, bool only_kill_query,
+                            const char *reason) {
   THD *tmp = NULL;
   uint error = ER_NO_SUCH_THREAD;
   Find_thd_with_id find_thd_with_id(id);
@@ -7215,7 +7262,8 @@ static uint kill_one_thread(THD *thd, my_thread_id id, bool only_kill_query) {
         if (tmp->is_system_user() && !thd->is_system_user()) {
           error = ER_KILL_DENIED_ERROR;
         } else {
-          tmp->awake(only_kill_query ? THD::KILL_QUERY : THD::KILL_CONNECTION);
+          tmp->awake(only_kill_query ? THD::KILL_QUERY : THD::KILL_CONNECTION,
+                     reason);
           error = 0;
         }
       } else
@@ -7237,11 +7285,13 @@ static uint kill_one_thread(THD *thd, my_thread_id id, bool only_kill_query) {
     thd			Thread class
     id			Thread id
     only_kill_query     Should it kill the query or the connection
+    reason  Description about the reason why it was killed
 */
 
-static void sql_kill(THD *thd, my_thread_id id, bool only_kill_query) {
+static void sql_kill(THD *thd, my_thread_id id, bool only_kill_query,
+                     const char *reason) {
   uint error;
-  if (!(error = kill_one_thread(thd, id, only_kill_query))) {
+  if (!(error = kill_one_thread(thd, id, only_kill_query, reason))) {
     if (!thd->killed) my_ok(thd);
   } else {
     if (error == ER_NO_SUCH_THREAD && thd->lex->is_ignore()) {
@@ -7808,7 +7858,8 @@ bool parse_sql(THD *thd, Parser_state *parser_state,
     parser_state->m_digest_psi = MYSQL_DIGEST_START(thd->m_statement_psi);
 
     if (parser_state->m_input.m_compute_digest ||
-        (parser_state->m_digest_psi != NULL)) {
+        (parser_state->m_digest_psi != NULL)   ||
+        sql_id_is_needed()) {
       /*
         If either:
         - the caller wants to compute a digest
@@ -7928,6 +7979,19 @@ bool parse_sql(THD *thd, Parser_state *parser_state,
     DBUG_ASSERT(thd->m_digest != NULL);
     MYSQL_DIGEST_END(parser_state->m_digest_psi,
                      &thd->m_digest->m_digest_storage);
+  }
+
+  /* Compute SQL ID if
+     - parse was successful,
+     - the SQL ID is needed,
+     - the digest has been populated
+  */
+  if (ret_value == 0     &&
+      sql_id_is_needed() &&
+      thd->m_digest && !thd->m_digest->m_digest_storage.is_empty()) {
+    digest_key sql_id;
+    compute_digest_hash(&thd->m_digest->m_digest_storage, sql_id.data());
+    thd->mt_key_set(THD::SQL_ID, sql_id.data(), DIGEST_HASH_SIZE);
   }
 
   DBUG_RETURN(ret_value);

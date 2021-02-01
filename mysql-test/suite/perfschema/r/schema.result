@@ -9,6 +9,7 @@ show tables;
 Tables_in_performance_schema
 accounts
 client_attributes
+column_statistics
 cond_instances
 data_lock_waits
 data_locks
@@ -100,6 +101,7 @@ setup_threads
 socket_instances
 socket_summary_by_event_name
 socket_summary_by_instance
+sql_findings
 status_by_account
 status_by_host
 status_by_thread
@@ -297,6 +299,9 @@ events_statements_current	CREATE TABLE `events_statements_current` (
   `INDEX_DIVE_CPU` bigint(20) unsigned NOT NULL,
   `COMPILATION_CPU` bigint(20) unsigned NOT NULL,
   `ELAPSED_TIME` bigint(20) unsigned NOT NULL,
+  `SKIPPED_COUNT` bigint(20) unsigned NOT NULL,
+  `FILESORT_DISK_USAGE` bigint(20) unsigned NOT NULL,
+  `TMP_TABLE_DISK_USAGE` bigint(20) unsigned NOT NULL,
   PRIMARY KEY (`THREAD_ID`,`EVENT_ID`)
 ) ENGINE=PERFORMANCE_SCHEMA DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci
 show create table events_statements_history;
@@ -344,6 +349,16 @@ events_statements_history	CREATE TABLE `events_statements_history` (
   `NESTING_EVENT_TYPE` enum('TRANSACTION','STATEMENT','STAGE','WAIT') DEFAULT NULL,
   `NESTING_EVENT_LEVEL` int(11) DEFAULT NULL,
   `STATEMENT_ID` bigint(20) unsigned DEFAULT NULL,
+  `CPU_TIME` bigint(20) unsigned NOT NULL,
+  `TMP_TABLE_BYTES_WRITTEN` bigint(20) unsigned NOT NULL,
+  `FILESORT_BYTES_WRITTEN` bigint(20) unsigned NOT NULL,
+  `INDEX_DIVE_COUNT` bigint(20) unsigned NOT NULL,
+  `INDEX_DIVE_CPU` bigint(20) unsigned NOT NULL,
+  `COMPILATION_CPU` bigint(20) unsigned NOT NULL,
+  `ELAPSED_TIME` bigint(20) unsigned NOT NULL,
+  `SKIPPED_COUNT` bigint(20) unsigned NOT NULL,
+  `FILESORT_DISK_USAGE` bigint(20) unsigned NOT NULL,
+  `TMP_TABLE_DISK_USAGE` bigint(20) unsigned NOT NULL,
   PRIMARY KEY (`THREAD_ID`,`EVENT_ID`)
 ) ENGINE=PERFORMANCE_SCHEMA DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci
 show create table events_statements_history_long;
@@ -390,7 +405,17 @@ events_statements_history_long	CREATE TABLE `events_statements_history_long` (
   `NESTING_EVENT_ID` bigint(20) unsigned DEFAULT NULL,
   `NESTING_EVENT_TYPE` enum('TRANSACTION','STATEMENT','STAGE','WAIT') DEFAULT NULL,
   `NESTING_EVENT_LEVEL` int(11) DEFAULT NULL,
-  `STATEMENT_ID` bigint(20) unsigned DEFAULT NULL
+  `STATEMENT_ID` bigint(20) unsigned DEFAULT NULL,
+  `CPU_TIME` bigint(20) unsigned NOT NULL,
+  `TMP_TABLE_BYTES_WRITTEN` bigint(20) unsigned NOT NULL,
+  `FILESORT_BYTES_WRITTEN` bigint(20) unsigned NOT NULL,
+  `INDEX_DIVE_COUNT` bigint(20) unsigned NOT NULL,
+  `INDEX_DIVE_CPU` bigint(20) unsigned NOT NULL,
+  `COMPILATION_CPU` bigint(20) unsigned NOT NULL,
+  `ELAPSED_TIME` bigint(20) unsigned NOT NULL,
+  `SKIPPED_COUNT` bigint(20) unsigned NOT NULL,
+  `FILESORT_DISK_USAGE` bigint(20) unsigned NOT NULL,
+  `TMP_TABLE_DISK_USAGE` bigint(20) unsigned NOT NULL
 ) ENGINE=PERFORMANCE_SCHEMA DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci
 show create table events_statements_summary_by_digest;
 Table	Create Table
@@ -432,6 +457,9 @@ events_statements_summary_by_digest	CREATE TABLE `events_statements_summary_by_d
   `SUM_INDEX_DIVE_CPU` bigint(20) unsigned NOT NULL,
   `SUM_COMPILATION_CPU` bigint(20) unsigned NOT NULL,
   `SUM_ELAPSED_TIME` bigint(20) unsigned NOT NULL,
+  `SUM_SKIPPED` bigint(20) unsigned NOT NULL,
+  `SUM_FILESORT_DISK_USAGE` bigint(20) unsigned NOT NULL,
+  `SUM_TMP_TABLE_DISK_USAGE` bigint(20) unsigned NOT NULL,
   `FIRST_SEEN` timestamp(6) NOT NULL DEFAULT '0000-00-00 00:00:00.000000',
   `LAST_SEEN` timestamp(6) NOT NULL DEFAULT '0000-00-00 00:00:00.000000',
   `QUANTILE_95` bigint(20) unsigned NOT NULL,
@@ -481,6 +509,9 @@ events_statements_summary_by_host_by_event_name	CREATE TABLE `events_statements_
   `SUM_INDEX_DIVE_CPU` bigint(20) unsigned NOT NULL,
   `SUM_COMPILATION_CPU` bigint(20) unsigned NOT NULL,
   `SUM_ELAPSED_TIME` bigint(20) unsigned NOT NULL,
+  `SUM_SKIPPED` bigint(20) unsigned NOT NULL,
+  `SUM_FILESORT_DISK_USAGE` bigint(20) unsigned NOT NULL,
+  `SUM_TMP_TABLE_DISK_USAGE` bigint(20) unsigned NOT NULL,
   UNIQUE KEY `HOST` (`HOST`,`EVENT_NAME`)
 ) ENGINE=PERFORMANCE_SCHEMA DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci
 show create table events_statements_summary_by_thread_by_event_name;
@@ -522,6 +553,9 @@ events_statements_summary_by_thread_by_event_name	CREATE TABLE `events_statement
   `SUM_INDEX_DIVE_CPU` bigint(20) unsigned NOT NULL,
   `SUM_COMPILATION_CPU` bigint(20) unsigned NOT NULL,
   `SUM_ELAPSED_TIME` bigint(20) unsigned NOT NULL,
+  `SUM_SKIPPED` bigint(20) unsigned NOT NULL,
+  `SUM_FILESORT_DISK_USAGE` bigint(20) unsigned NOT NULL,
+  `SUM_TMP_TABLE_DISK_USAGE` bigint(20) unsigned NOT NULL,
   PRIMARY KEY (`THREAD_ID`,`EVENT_NAME`)
 ) ENGINE=PERFORMANCE_SCHEMA DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci
 show create table events_statements_summary_by_user_by_event_name;
@@ -563,6 +597,9 @@ events_statements_summary_by_user_by_event_name	CREATE TABLE `events_statements_
   `SUM_INDEX_DIVE_CPU` bigint(20) unsigned NOT NULL,
   `SUM_COMPILATION_CPU` bigint(20) unsigned NOT NULL,
   `SUM_ELAPSED_TIME` bigint(20) unsigned NOT NULL,
+  `SUM_SKIPPED` bigint(20) unsigned NOT NULL,
+  `SUM_FILESORT_DISK_USAGE` bigint(20) unsigned NOT NULL,
+  `SUM_TMP_TABLE_DISK_USAGE` bigint(20) unsigned NOT NULL,
   UNIQUE KEY `USER` (`USER`,`EVENT_NAME`)
 ) ENGINE=PERFORMANCE_SCHEMA DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci
 show create table events_statements_summary_by_account_by_event_name;
@@ -605,6 +642,9 @@ events_statements_summary_by_account_by_event_name	CREATE TABLE `events_statemen
   `SUM_INDEX_DIVE_CPU` bigint(20) unsigned NOT NULL,
   `SUM_COMPILATION_CPU` bigint(20) unsigned NOT NULL,
   `SUM_ELAPSED_TIME` bigint(20) unsigned NOT NULL,
+  `SUM_SKIPPED` bigint(20) unsigned NOT NULL,
+  `SUM_FILESORT_DISK_USAGE` bigint(20) unsigned NOT NULL,
+  `SUM_TMP_TABLE_DISK_USAGE` bigint(20) unsigned NOT NULL,
   UNIQUE KEY `ACCOUNT` (`USER`,`HOST`,`EVENT_NAME`)
 ) ENGINE=PERFORMANCE_SCHEMA DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci
 show create table events_statements_summary_global_by_event_name;
@@ -645,6 +685,9 @@ events_statements_summary_global_by_event_name	CREATE TABLE `events_statements_s
   `SUM_INDEX_DIVE_CPU` bigint(20) unsigned NOT NULL,
   `SUM_COMPILATION_CPU` bigint(20) unsigned NOT NULL,
   `SUM_ELAPSED_TIME` bigint(20) unsigned NOT NULL,
+  `SUM_SKIPPED` bigint(20) unsigned NOT NULL,
+  `SUM_FILESORT_DISK_USAGE` bigint(20) unsigned NOT NULL,
+  `SUM_TMP_TABLE_DISK_USAGE` bigint(20) unsigned NOT NULL,
   PRIMARY KEY (`EVENT_NAME`)
 ) ENGINE=PERFORMANCE_SCHEMA DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci
 show create table events_transactions_current;
@@ -1595,6 +1638,7 @@ threads	CREATE TABLE `threads` (
   `CONNECTION_TYPE` varchar(16) DEFAULT NULL,
   `THREAD_OS_ID` bigint(20) unsigned DEFAULT NULL,
   `RESOURCE_GROUP` varchar(64) DEFAULT NULL,
+  `THREAD_PRIORITY` int(11) DEFAULT NULL,
   PRIMARY KEY (`THREAD_ID`),
   KEY `PROCESSLIST_ID` (`PROCESSLIST_ID`),
   KEY `THREAD_OS_ID` (`THREAD_OS_ID`),

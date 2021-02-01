@@ -182,16 +182,31 @@
 
    800171007:
    add replica_statistics table
-   
-   800171008
+
+   800171008:
    add client attributes
 
-   800171009
+   800171009:
    add write_statistics
    add write_throttling_rules
    add write_throttling_log
 
+   800171010:
+   add sql_findings
+
+   800171011:
+   add THREAD_PRIORITY column to threads table.
+
+   800171012:
+   add skipped count to statement statistics
+
+   800171013:
+   add COLUMN_STATISTICS table
+
+   800171014:
+   add SUM_FILESORT_DISK_USAGE to statements tables.
+   add SUM_TMP_TABLE_DISK_USAGE to statements tables.
 */
-static const uint PFS_DD_VERSION = 800171009;
+static const uint PFS_DD_VERSION = 800171014;
 
 #endif /* PFS_DD_VERSION_H */

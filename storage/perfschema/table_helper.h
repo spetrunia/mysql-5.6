@@ -876,6 +876,7 @@ struct PFS_stage_stat_row {
 struct PFS_statement_stat_row {
   PFS_stat_row m_timer1_row;
   ulonglong m_error_count;
+  ulonglong m_skipped_count;
   ulonglong m_warning_count;
   ulonglong m_rows_affected;
   ulonglong m_lock_time;
@@ -904,6 +905,8 @@ struct PFS_statement_stat_row {
   ulonglong m_sort_scan;
   ulonglong m_no_index_used;
   ulonglong m_no_good_index_used;
+  ulonglong m_filesort_disk_usage_peak;
+  ulonglong m_tmp_table_disk_usage_peak;
 
   /** Build a row from a memory buffer. */
   inline void set(time_normalizer *normalizer, const PFS_statement_stat *stat) {
@@ -911,6 +914,7 @@ struct PFS_statement_stat_row {
       m_timer1_row.set(normalizer, &stat->m_timer1_stat);
 
       m_error_count = stat->m_error_count;
+      m_skipped_count = stat->m_skipped_count;
       m_warning_count = stat->m_warning_count;
       m_lock_time = stat->m_lock_time * MICROSEC_TO_PICOSEC;
       m_cpu_time = stat->m_cpu_time * MICROSEC_TO_PICOSEC;
@@ -942,10 +946,13 @@ struct PFS_statement_stat_row {
       m_sort_scan = stat->m_sort_scan;
       m_no_index_used = stat->m_no_index_used;
       m_no_good_index_used = stat->m_no_good_index_used;
+      m_filesort_disk_usage_peak = stat->m_filesort_disk_usage_peak;
+      m_tmp_table_disk_usage_peak = stat->m_tmp_table_disk_usage_peak;
     } else {
       m_timer1_row.reset();
 
       m_error_count = 0;
+      m_skipped_count = 0;
       m_warning_count = 0;
       m_lock_time = 0;
       m_cpu_time = 0;
@@ -974,6 +981,8 @@ struct PFS_statement_stat_row {
       m_sort_scan = 0;
       m_no_index_used = 0;
       m_no_good_index_used = 0;
+      m_filesort_disk_usage_peak = 0;
+      m_tmp_table_disk_usage_peak = 0;
     }
   }
 

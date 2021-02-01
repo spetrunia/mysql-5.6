@@ -1,6 +1,6 @@
 /*****************************************************************************
 
-Copyright (c) 1995, 2019, Oracle and/or its affiliates. All Rights Reserved.
+Copyright (c) 1995, 2020, Oracle and/or its affiliates. All Rights Reserved.
 Copyright (c) 2008, 2009 Google Inc.
 Copyright (c) 2009, Percona Inc.
 
@@ -254,6 +254,10 @@ When flushing takes longer, user threads no longer spin when waiting for
 flushed redo. Expressed in microseconds. */
 ulong srv_log_wait_for_flush_spin_hwm;
 
+/** Timeout used when waiting for redo ready (microseconds). */
+ulong srv_log_wait_for_ready_timeout =
+    INNODB_LOG_WAIT_FOR_READY_TIMEOUT_DEFAULT;
+
 /* EXPERIMENTAL sys vars below - we need defaults set explicitly here. */
 
 /** When log writer follows links in the log recent written buffer,
@@ -398,6 +402,8 @@ ulint srv_buf_pool_old_size = 0;
 ulint srv_buf_pool_base_size = 0;
 /** Current size in bytes */
 long long srv_buf_pool_curr_size = 0;
+/* Default sync pool size containing mutex, cond_var for buffer blocks */
+ulong srv_sync_pool_size = 1024;
 /** Dump this % of each buffer pool during BP dump */
 ulong srv_buf_pool_dump_pct;
 /** Lock table size in bytes */
@@ -2364,6 +2370,10 @@ static void srv_master_do_active_tasks(void) {
 
   srv_update_cpu_usage();
 
+  if (trx_sys->rseg_history_len > 0) {
+    srv_wake_purge_thread_if_not_active();
+  }
+
   if (cur_time % SRV_MASTER_DICT_LRU_INTERVAL == 0) {
     srv_main_thread_op_info = "enforcing dict cache limit";
     ulint n_evicted = srv_master_evict_from_table_cache(50);
@@ -2416,6 +2426,10 @@ static void srv_master_do_idle_tasks(void) {
   }
 
   srv_update_cpu_usage();
+
+  if (trx_sys->rseg_history_len > 0) {
+    srv_wake_purge_thread_if_not_active();
+  }
 
   srv_main_thread_op_info = "enforcing dict cache limit";
   ulint n_evicted = srv_master_evict_from_table_cache(100);

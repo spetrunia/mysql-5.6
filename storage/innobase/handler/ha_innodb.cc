@@ -8661,6 +8661,9 @@ int ha_innobase::write_row(uchar *record) /*!< in: a row in MySQL format */
   /* Increase the write count of handler */
   ha_statistic_increment(&System_status_var::ha_write_count);
 
+  error_result = check_disk_usage();
+  if (error_result) DBUG_RETURN(error_result);
+
   if (m_prebuilt->table->is_intrinsic()) {
     DBUG_RETURN(intrinsic_table_write_row(record));
   }
@@ -9398,6 +9401,9 @@ int ha_innobase::update_row(const uchar *old_row, uchar *new_row) {
   DBUG_ENTER("ha_innobase::update_row");
 
   ut_a(m_prebuilt->trx == trx);
+
+  err = check_disk_usage();
+  if (err) DBUG_RETURN(err);
 
   if (high_level_read_only && !m_prebuilt->table->is_intrinsic()) {
     ib_senderrf(ha_thd(), IB_LOG_LEVEL_WARN, ER_READ_ONLY_MODE);
@@ -11144,6 +11150,11 @@ inline MY_ATTRIBUTE((warn_unused_result)) int create_table_info_t::
       err = dict_build_tablespace_for_table(table, m_trx);
 
       if (err == DB_SUCCESS) {
+        /* Set size change callback. */
+        fil_space_t *space = fil_space_get(table->space);
+        ut_ad(space);
+        space->size_change = ha_innobase::record_disk_usage_change;
+
         /* Temp-table are maintained in memory and so
         can_be_evicted is FALSE. */
         mem_heap_t *temp_table_heap;
@@ -21602,6 +21613,15 @@ static MYSQL_SYSVAR_BOOL(
     "if supported",
     NULL, NULL, FALSE);
 
+static MYSQL_SYSVAR_DOUBLE(
+    segment_reserve_factor, fseg_reserve_factor, PLUGIN_VAR_OPCMDARG,
+    "If this value is x, then if the number of unused but reserved"
+    " pages in a segment is less than reserved pages * x, and there are"
+    " at least FSEG_FRAG_LIMIT used pages, then we allow a new empty extent to"
+    " be added to the segment in fseg_alloc_free_page. Otherwise, we"
+    " use unused pages of the segment.",
+    NULL, NULL, 0.01, 0.0003, 0.4, 0);
+
 /* If the default value of innodb_buffer_pool_size is increased to be more than
 BUF_POOL_SIZE_THRESHOLD (srv/srv0start.cc), then srv_buf_pool_instances_default
 can be removed and 8 used instead. The problem with the current setup is that
@@ -21651,6 +21671,13 @@ static MYSQL_SYSVAR_ULONG(buffer_pool_instances, srv_buf_pool_instances,
                           "value on high-end machines to increase scalability",
                           NULL, NULL, srv_buf_pool_instances_default, 0,
                           MAX_BUFFER_POOLS, 0);
+
+static MYSQL_SYSVAR_ULONG(
+    sync_pool_size, srv_sync_pool_size,
+    PLUGIN_VAR_RQCMDARG | PLUGIN_VAR_READONLY,
+    "The size of the shared sync pool buffer InnoDB uses to store system lock"
+    "and condition variables.",
+    NULL, NULL, 1024UL, 1UL, 1024UL * 1024UL, 1UL);
 
 static MYSQL_SYSVAR_STR(
     buffer_pool_filename, srv_buf_dump_filename,
@@ -21911,6 +21938,12 @@ static MYSQL_SYSVAR_ULONG(
     " When flushing takes longer, user threads no longer spin when waiting for"
     "flushed redo. Expressed in microseconds.",
     NULL, NULL, INNODB_LOG_WAIT_FOR_FLUSH_SPIN_HWM_DEFAULT, 0, ULONG_MAX, 0);
+
+static MYSQL_SYSVAR_ULONG(
+    log_wait_for_ready_timeout, srv_log_wait_for_ready_timeout,
+    PLUGIN_VAR_RQCMDARG,
+    "Timeout used when waiting for redo log ready (microseconds).", NULL, NULL,
+    INNODB_LOG_WAIT_FOR_READY_TIMEOUT_DEFAULT, 0, ULONG_MAX, 0);
 
 #ifdef ENABLE_EXPERIMENT_SYSVARS
 
@@ -22467,6 +22500,7 @@ static SYS_VAR *innobase_system_variables[] = {
     MYSQL_SYSVAR(buffer_pool_chunk_size),
     MYSQL_SYSVAR(buffer_pool_populate),
     MYSQL_SYSVAR(buffer_pool_instances),
+    MYSQL_SYSVAR(sync_pool_size),
     MYSQL_SYSVAR(buffer_pool_filename),
     MYSQL_SYSVAR(buffer_pool_dump_now),
     MYSQL_SYSVAR(buffer_pool_dump_at_shutdown),
@@ -22529,6 +22563,7 @@ static SYS_VAR *innobase_system_variables[] = {
     MYSQL_SYSVAR(log_spin_cpu_abs_lwm),
     MYSQL_SYSVAR(log_spin_cpu_pct_hwm),
     MYSQL_SYSVAR(log_wait_for_flush_spin_hwm),
+    MYSQL_SYSVAR(log_wait_for_ready_timeout),
 #ifdef ENABLE_EXPERIMENT_SYSVARS
     MYSQL_SYSVAR(log_write_events),
     MYSQL_SYSVAR(log_flush_events),
@@ -22667,6 +22702,7 @@ static SYS_VAR *innobase_system_variables[] = {
     MYSQL_SYSVAR(lra_debug),
 #endif /* UNIV_DEBUG */
     MYSQL_SYSVAR(parallel_read_threads),
+    MYSQL_SYSVAR(segment_reserve_factor),
     MYSQL_SYSVAR(aio_outstanding_requests),
     MYSQL_SYSVAR(lra_size),
     MYSQL_SYSVAR(lra_pages_before_sleep),
@@ -23246,6 +23282,30 @@ void ha_innobase::mv_key_capacity(uint *num_keys, size_t *keys_length) const {
 
   *keys_length = Multi_value_logger::get_keys_capacity(
       free_space, min_mv_key_length, num_keys);
+}
+
+/** Record a change in disk usage.
+  @param[in]  delta  change of disk usage in bytes
+*/
+void ha_innobase::record_disk_usage_change(longlong delta) {
+  THD *thd = current_thd;
+  if (thd) {
+    thd->adjust_tmp_table_disk_usage(delta);
+  }
+}
+
+/** Check if disk usage is within limits.
+  @return The error code (errno).
+*/
+int ha_innobase::check_disk_usage() {
+  int error = 0;
+  if (table->s->tmp_table != NO_TMP_TABLE &&
+      table->s->tmp_table != SYSTEM_TMP_TABLE && is_tmp_disk_usage_over_max()) {
+    error = HA_ERR_MAX_TMP_DISK_USAGE_EXCEEDED;
+    print_error(error, MYF(0));
+  }
+
+  return error;
 }
 
 /** Use this when the args are passed to the format string from

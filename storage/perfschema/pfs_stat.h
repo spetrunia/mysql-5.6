@@ -376,6 +376,7 @@ struct PFS_prepared_stmt_stat {
 */
 struct PFS_statement_stat {
   PFS_single_stat m_timer1_stat;
+  ulonglong m_skipped_count;
   ulonglong m_error_count;
   ulonglong m_warning_count;
   ulonglong m_rows_affected;
@@ -405,6 +406,8 @@ struct PFS_statement_stat {
   ulonglong m_sort_scan;
   ulonglong m_no_index_used;
   ulonglong m_no_good_index_used;
+  ulonglong m_filesort_disk_usage_peak;
+  ulonglong m_tmp_table_disk_usage_peak;
 
   PFS_statement_stat() { reset(); }
 
@@ -416,6 +419,7 @@ struct PFS_statement_stat {
   inline void delayed_reset(void) {
     if (m_timer1_stat.m_count == 0) {
       m_timer1_stat.reset();
+      m_skipped_count = 0;
       m_error_count = 0;
       m_warning_count = 0;
       m_rows_affected = 0;
@@ -445,6 +449,8 @@ struct PFS_statement_stat {
       m_sort_scan = 0;
       m_no_index_used = 0;
       m_no_good_index_used = 0;
+      m_filesort_disk_usage_peak = 0;
+      m_tmp_table_disk_usage_peak = 0;
     }
   }
 
@@ -464,6 +470,7 @@ struct PFS_statement_stat {
       delayed_reset();
       m_timer1_stat.aggregate_no_check(&stat->m_timer1_stat);
 
+      m_skipped_count += stat->m_skipped_count;
       m_error_count += stat->m_error_count;
       m_warning_count += stat->m_warning_count;
       m_rows_affected += stat->m_rows_affected;
@@ -493,6 +500,8 @@ struct PFS_statement_stat {
       m_sort_scan += stat->m_sort_scan;
       m_no_index_used += stat->m_no_index_used;
       m_no_good_index_used += stat->m_no_good_index_used;
+      m_filesort_disk_usage_peak += stat->m_filesort_disk_usage_peak;
+      m_tmp_table_disk_usage_peak += stat->m_tmp_table_disk_usage_peak;
     }
   }
 };

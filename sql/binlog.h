@@ -906,7 +906,7 @@ class MYSQL_BIN_LOG : public TC_LOG {
       uint64_t *max_prev_hlc = NULL);
 
   void set_previous_gtid_set_relaylog(Gtid_set *previous_gtid_set_param) {
-    DBUG_ASSERT(is_relay_log);
+    DBUG_ASSERT(is_apply_log || is_relay_log);
     previous_gtid_set_relaylog = previous_gtid_set_param;
   }
   /**
@@ -1487,6 +1487,7 @@ int log_loaded_block(IO_CACHE *file);
 bool purge_master_logs(THD *thd, const char *to_log);
 bool purge_raft_logs(THD *thd, const char *to_log);
 bool purge_raft_logs_before_date(THD *thd, time_t purge_time);
+bool update_relay_log_cordinates(Relay_log_info *rli);
 bool show_raft_logs(THD *thd);
 bool purge_master_logs_before_date(THD *thd, time_t purge_time);
 bool show_binlog_events(THD *thd, MYSQL_BIN_LOG *binary_log);
@@ -1553,7 +1554,7 @@ int binlog_change_to_apply();
 
   @returns true if a problem occurs, false otherwise.
  */
-int binlog_change_to_binlog();
+int binlog_change_to_binlog(THD *thd);
 
 /**
   Turns a relative log binary log path into a full path, based on the

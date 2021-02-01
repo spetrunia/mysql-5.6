@@ -749,6 +749,9 @@ The documentation is based on the source files such as:
 #ifdef HAVE_SYS_RESOURCE_H
 #include <sys/resource.h>
 #endif
+#ifdef HAVE_SYS_CAPABILITY_H
+#include <sys/capability.h>
+#endif
 #include <sys/stat.h>
 #ifdef HAVE_UNISTD_H
 #include <unistd.h>
@@ -1020,6 +1023,7 @@ static std::atomic<enum_server_operational_state> server_operational_state{
     SERVER_BOOTING};
 char *opt_log_error_suppression_list;
 char *opt_log_error_services;
+char *thread_priority_str = NULL;
 char *opt_keyring_migration_user = NULL;
 char *opt_keyring_migration_host = NULL;
 char *opt_keyring_migration_password = NULL;
@@ -1041,6 +1045,13 @@ bool enable_blind_replace = false;
 bool enable_acl_fast_lookup = false;
 bool enable_acl_db_cache = true;
 bool enable_super_log_bin_read_only = false;
+ulonglong max_tmp_disk_usage{0};
+std::atomic<ulonglong> filesort_disk_usage{0};
+std::atomic<ulonglong> filesort_disk_usage_peak{0};
+std::atomic<ulonglong> filesort_disk_usage_period_peak{0};
+std::atomic<ulonglong> tmp_table_disk_usage{0};
+std::atomic<ulonglong> tmp_table_disk_usage_peak{0};
+std::atomic<ulonglong> tmp_table_disk_usage_period_peak{0};
 
 ulong opt_commit_consensus_error_action = 0;
 bool enable_raft_plugin = 0;
@@ -1146,6 +1157,12 @@ mysql_mutex_t LOCK_global_write_throttling_log;
 
 /* Lock to be used for auto throttling based on replication lag */
 mysql_mutex_t LOCK_replication_lag_auto_throttling;
+
+/* Lock to protect global_sql_findings map structure */
+mysql_mutex_t LOCK_global_sql_findings;
+
+/* Lock to protect global_active_sql map structure */
+mysql_mutex_t LOCK_global_active_sql;
 
 ulonglong rbr_unsafe_queries = 0;
 
@@ -1298,6 +1315,7 @@ ulong max_connections, max_connect_errors;
 ulong max_nonsuper_connections = 0;
 std::atomic<ulong> nonsuper_connections(0);
 ulong opt_max_running_queries, opt_max_waiting_queries;
+ulong opt_max_db_connections;
 ulong rpl_stop_slave_timeout = LONG_TIMEOUT;
 bool rpl_skip_tx_api = false;
 bool rpl_slave_flow_control = true;
@@ -1313,6 +1331,18 @@ bool skip_core_dump_on_error = false;
  * abort for long running queries.
  */
 ulong write_control_level;
+
+/* Global variable to denote the maximum CPU time (specified in milliseconds)
+ * limit for DML queries.
+ */
+uint write_cpu_limit_milliseconds;
+
+/* Global variable to denote the frequency (specified in number of rows) of
+ * checking whether DML queries exceeded the CPU time limit enforced by
+ * 'write_time_check_batch'
+ */
+uint write_time_check_batch;
+
 /* Controls num most recent data points to collect for
  * information_schema.write_statistics */
 uint write_stats_count;
@@ -1339,6 +1369,15 @@ uint write_throttle_lag_pct_min_secondaries;
 /* The frequency (seconds) at which auto throttling checks are run on a primary
  */
 ulong write_auto_throttle_frequency;
+/* Controls collecting column statistics for every SQL statement */
+ulong column_stats_control;
+/* Controls collecting MySQL findings (aka SQL conditions) */
+ulong sql_findings_control;
+/* Controls whether MySQL send an error when running duplicate statements */
+uint sql_maximum_duplicate_executions;
+/* Controls the mode of enforcement of duplicate executions of the same stmt */
+ulong sql_duplicate_executions_control;
+
 bool opt_group_replication_plugin_hooks = false;
 bool slave_high_priority_ddl = false;
 double slave_high_priority_lock_wait_timeout_double = 1.0;
@@ -1573,6 +1612,7 @@ mysql_mutex_t LOCK_slave_net_timeout;
 mysql_mutex_t LOCK_slave_trans_dep_tracker;
 mysql_mutex_t LOCK_log_throttle_qni;
 mysql_mutex_t LOCK_log_throttle_ddl;
+mysql_rwlock_t LOCK_column_statistics;
 mysql_rwlock_t LOCK_sys_init_connect, LOCK_sys_init_slave;
 mysql_rwlock_t LOCK_system_variables_hash;
 my_thread_handle signal_thread_id;
@@ -1850,6 +1890,18 @@ void aggregate_status_var(std::function<void(THD *)> callback,
     mysql_mutex_assert_owner(&thd->LOCK_thd_data);
     mysql_mutex_unlock(&thd->LOCK_thd_data);
   }
+}
+
+/**
+  Check if global tmp disk usage exceeds max.
+
+  @return
+    @retval true   Usage exceeds max.
+    @retval false  Usage is below max, or max is not set.
+*/
+bool is_tmp_disk_usage_over_max() {
+  return static_cast<longlong>(max_tmp_disk_usage) > 0 &&
+         filesort_disk_usage + tmp_table_disk_usage > max_tmp_disk_usage;
 }
 
 static void option_error_reporter(enum loglevel level, uint ecode, ...) {
@@ -2540,6 +2592,8 @@ static void clean_up(bool print_message) {
   }
 
   free_global_write_statistics();
+  free_global_sql_findings();
+  free_global_active_sql();
 
   free_max_user_conn();
   end_slave_list();
@@ -2627,6 +2681,7 @@ static void clean_up_mutexes() {
   mysql_mutex_destroy(&LOCK_slave_stats_daemon);
   mysql_mutex_destroy(&LOCK_crypt);
   mysql_mutex_destroy(&LOCK_user_conn);
+  mysql_rwlock_destroy(&LOCK_column_statistics);
   mysql_rwlock_destroy(&LOCK_sys_init_connect);
   mysql_rwlock_destroy(&LOCK_sys_init_slave);
   mysql_mutex_destroy(&LOCK_global_system_variables);
@@ -2642,6 +2697,8 @@ static void clean_up_mutexes() {
   mysql_mutex_destroy(&LOCK_global_write_throttling_rules);
   mysql_mutex_destroy(&LOCK_global_write_throttling_log);
   mysql_mutex_destroy(&LOCK_replication_lag_auto_throttling);
+  mysql_mutex_destroy(&LOCK_global_sql_findings);
+  mysql_mutex_destroy(&LOCK_global_active_sql);
   mysql_mutex_destroy(&LOCK_default_password_lifetime);
   mysql_mutex_destroy(&LOCK_mandatory_roles);
   mysql_mutex_destroy(&LOCK_server_started);
@@ -2775,7 +2832,7 @@ static void set_user(const char *user, const PasswdValue &user_info_arg) {
     LogErr(ERROR_LEVEL, ER_FAIL_SETGID, strerror(errno));
     unireg_abort(MYSQLD_ABORT_EXIT);
   }
-  if (setuid(user_info_arg.pw_uid) == -1) {
+  if (setresuid(user_info_arg.pw_uid, user_info_arg.pw_uid, -1) == -1) {
     LogErr(ERROR_LEVEL, ER_FAIL_SETUID, strerror(errno));
     unireg_abort(MYSQLD_ABORT_EXIT);
   }
@@ -5348,6 +5405,7 @@ static int init_thread_environment() {
   mysql_mutex_init(key_LOCK_user_conn, &LOCK_user_conn, MY_MUTEX_INIT_FAST);
   mysql_mutex_init(key_LOCK_global_system_variables,
                    &LOCK_global_system_variables, MY_MUTEX_INIT_FAST);
+  mysql_rwlock_init(key_rwlock_LOCK_column_statistics, &LOCK_column_statistics);
   mysql_rwlock_init(key_rwlock_LOCK_system_variables_hash,
                     &LOCK_system_variables_hash);
   mysql_mutex_init(key_LOCK_prepared_stmt_count, &LOCK_prepared_stmt_count,
@@ -5396,6 +5454,10 @@ static int init_thread_environment() {
                    &LOCK_global_write_throttling_log, MY_MUTEX_INIT_FAST);
   mysql_mutex_init(key_LOCK_replication_lag_auto_throttling,
                    &LOCK_replication_lag_auto_throttling, MY_MUTEX_INIT_FAST);
+  mysql_mutex_init(key_LOCK_global_sql_findings, &LOCK_global_sql_findings,
+                   MY_MUTEX_INIT_FAST);
+  mysql_mutex_init(key_LOCK_global_active_sql, &LOCK_global_active_sql,
+                   MY_MUTEX_INIT_FAST);
   mysql_cond_init(key_COND_server_started, &COND_server_started);
   mysql_mutex_init(key_LOCK_reset_gtid_table, &LOCK_reset_gtid_table,
                    MY_MUTEX_INIT_FAST);
@@ -7671,7 +7733,7 @@ int mysqld_main(int argc, char **argv)
     unireg_abort(MYSQLD_ABORT_EXIT);
 
   // TODO(luqun): moved to after_server_startup hook or something similar
-  if (enable_raft_plugin) {
+  if (!opt_initialize) {
     // do the postponed init of raft, now that
     // binlog recovery has finished.
     raft_plugin_initialize();
@@ -9001,6 +9063,14 @@ static int get_db_ac_total_waiting_queries(THD *thd MY_ATTRIBUTE((unused)),
   return 0;
 }
 
+static int get_db_ac_total_rejected_connections(THD *thd MY_ATTRIBUTE((unused)),
+                                                SHOW_VAR *var, char *buff) {
+  var->type = SHOW_LONGLONG;
+  var->value = buff;
+  *((longlong *)buff) = db_ac->get_total_rejected_connections();
+  return 0;
+}
+
 #ifdef ENABLED_PROFILING
 static int show_flushstatustime(THD *thd, SHOW_VAR *var, char *buff) {
   var->type = SHOW_LONGLONG;
@@ -9386,6 +9456,84 @@ static int show_last_acked_binlog_pos(THD *, SHOW_VAR *var, char *buff) {
   return 0;
 }
 
+void update_peak(std::atomic<ulonglong> *peak, ulonglong new_value) {
+  ulonglong old_peak = *peak;
+  while (old_peak < new_value) {
+    /* If Compare-And-Swap is unsuccessful then old_peak is updated. */
+    if (peak->compare_exchange_weak(old_peak, new_value)) break;
+  }
+}
+
+ulonglong reset_peak(std::atomic<ulonglong> *peak,
+                     const std::atomic<ulonglong> &value) {
+  /* First, reset to 0 not to miss updates to value between reading it
+      and setting the peak. If update is missed then peak could be smaller
+      than current value. */
+  ulonglong result = peak->exchange(0);
+
+  /* Now update peak with latest value, possibly racing with others. */
+  update_peak(peak, value);
+
+  return result;
+}
+
+int show_longlong(SHOW_VAR *var, char *buff, ulonglong value) {
+  var->type = SHOW_LONGLONG;
+  var->value = buff;
+  *reinterpret_cast<ulonglong *>(buff) = value;
+  return 0;
+}
+
+static int show_filesort_disk_usage(THD *thd, SHOW_VAR *var, char *buff) {
+  return thd->lex->option_type == OPT_SESSION
+             ? show_longlong(var, buff, thd->get_filesort_disk_usage())
+             : show_longlong(var, buff, filesort_disk_usage);
+}
+
+static int show_filesort_disk_usage_peak(THD *thd, SHOW_VAR *var, char *buff) {
+  return thd->lex->option_type == OPT_SESSION
+             ? show_longlong(var, buff, thd->get_filesort_disk_usage_peak())
+             : show_longlong(var, buff, filesort_disk_usage_peak);
+}
+
+static int show_tmp_table_disk_usage(THD *thd, SHOW_VAR *var, char *buff) {
+  return thd->lex->option_type == OPT_SESSION
+             ? show_longlong(var, buff, thd->get_tmp_table_disk_usage())
+             : show_longlong(var, buff, tmp_table_disk_usage);
+}
+
+static int show_tmp_table_disk_usage_peak(THD *thd, SHOW_VAR *var, char *buff) {
+  return thd->lex->option_type == OPT_SESSION
+             ? show_longlong(var, buff, thd->get_tmp_table_disk_usage_peak())
+             : show_longlong(var, buff, tmp_table_disk_usage_peak);
+}
+
+static int show_peak_with_reset(THD *thd, SHOW_VAR *var, char *buff,
+                                std::atomic<ulonglong> *peak,
+                                const std::atomic<ulonglong> &usage) {
+  var->type = SHOW_LONGLONG;
+  var->value = buff;
+  if (thd->variables.reset_period_status_vars) {
+    *reinterpret_cast<ulonglong *>(buff) = reset_peak(peak, usage);
+  } else {
+    *reinterpret_cast<ulonglong *>(buff) = *peak;
+  }
+
+  return 0;
+}
+
+static int show_filesort_disk_usage_period_peak(THD *thd, SHOW_VAR *var,
+                                                char *buff) {
+  return show_peak_with_reset(thd, var, buff, &filesort_disk_usage_period_peak,
+                              filesort_disk_usage);
+}
+
+static int show_tmp_table_disk_usage_period_peak(THD *thd, SHOW_VAR *var,
+                                                 char *buff) {
+  return show_peak_with_reset(thd, var, buff, &tmp_table_disk_usage_period_peak,
+                              tmp_table_disk_usage);
+}
+
 /*
   Variables shown by SHOW STATUS in alphabetical order
 */
@@ -9497,6 +9645,9 @@ SHOW_VAR status_vars[] = {
      SHOW_LONGLONG_STATUS, SHOW_SCOPE_ALL},
     {"Database_admission_control_aborted_queries",
      (char *)&get_db_ac_total_aborted_queries, SHOW_FUNC, SHOW_SCOPE_GLOBAL},
+    {"Database_admission_control_rejected_connections",
+     (char *)&get_db_ac_total_rejected_connections, SHOW_FUNC,
+     SHOW_SCOPE_GLOBAL},
     {"Database_admission_control_running_queries",
      (char *)&get_db_ac_total_running_queries, SHOW_FUNC, SHOW_SCOPE_GLOBAL},
     {"Database_admission_control_timeout_queries",
@@ -9511,6 +9662,13 @@ SHOW_VAR status_vars[] = {
      SHOW_SCOPE_GLOBAL},
     {"Exec_seconds", (char *)offsetof(System_status_var, exec_time),
      SHOW_TIMER_STATUS, SHOW_SCOPE_ALL},
+    {"Filesort_disk_usage", (char *)show_filesort_disk_usage, SHOW_FUNC,
+     SHOW_SCOPE_ALL},
+    {"Filesort_disk_usage_peak", (char *)show_filesort_disk_usage_peak,
+     SHOW_FUNC, SHOW_SCOPE_ALL},
+    {"Filesort_disk_usage_period_peak",
+     (char *)show_filesort_disk_usage_period_peak, SHOW_FUNC,
+     SHOW_SCOPE_GLOBAL},
     {"Flush_commands", (char *)&refresh_version, SHOW_LONG_NOFLUSH,
      SHOW_SCOPE_GLOBAL},
     {"Git_hash", (char *)git_hash, SHOW_CHAR, SHOW_SCOPE_GLOBAL},
@@ -9835,6 +9993,13 @@ SHOW_VAR status_vars[] = {
     {"Tc_log_page_size", (char *)&tc_log_page_size, SHOW_LONG_NOFLUSH,
      SHOW_SCOPE_GLOBAL},
     {"Tc_log_page_waits", (char *)&tc_log_page_waits, SHOW_LONG,
+     SHOW_SCOPE_GLOBAL},
+    {"Tmp_table_disk_usage", (char *)show_tmp_table_disk_usage, SHOW_FUNC,
+     SHOW_SCOPE_ALL},
+    {"Tmp_table_disk_usage_peak", (char *)show_tmp_table_disk_usage_peak,
+     SHOW_FUNC, SHOW_SCOPE_ALL},
+    {"Tmp_table_disk_usage_period_peak",
+     (char *)show_tmp_table_disk_usage_period_peak, SHOW_FUNC,
      SHOW_SCOPE_GLOBAL},
     {"Threads_binlog_client", (char *)&show_num_thread_binlog_client, SHOW_FUNC,
      SHOW_SCOPE_GLOBAL},
@@ -11548,7 +11713,7 @@ class Reset_thd_status : public Do_THD_Impl {
     if (!thd->status_var_aggregated) {
       add_to_status(&global_status_var, &thd->status_var);
     }
-    reset_system_status_vars(&thd->status_var);
+    thd->reset_status_vars();
   }
 };
 
@@ -11642,6 +11807,10 @@ PSI_mutex_key key_LOCK_global_write_statistics;
 PSI_mutex_key key_LOCK_global_write_throttling_rules;
 PSI_mutex_key key_LOCK_global_write_throttling_log;
 PSI_mutex_key key_LOCK_replication_lag_auto_throttling;
+PSI_mutex_key key_LOCK_global_sql_findings;
+PSI_mutex_key key_LOCK_global_active_sql;
+PSI_mutex_key key_LOCK_ac_node;
+PSI_mutex_key key_LOCK_ac_info;
 
 /* clang-format off */
 static PSI_mutex_info all_server_mutexes[]=
@@ -11707,6 +11876,10 @@ static PSI_mutex_info all_server_mutexes[]=
   { &key_LOCK_global_write_throttling_rules, "LOCK_global_write_throttling_rules", PSI_FLAG_SINGLETON, 0, PSI_DOCUMENT_ME},
   { &key_LOCK_global_write_throttling_log, "LOCK_global_write_throttling_log", PSI_FLAG_SINGLETON, 0, PSI_DOCUMENT_ME},
   { &key_LOCK_replication_lag_auto_throttling, "LOCK_replication_lag_auto_throttling", PSI_FLAG_SINGLETON, 0, PSI_DOCUMENT_ME},
+  { &key_LOCK_global_sql_findings, "LOCK_global_sql_findings",
+    PSI_FLAG_SINGLETON, 0, PSI_DOCUMENT_ME},
+  { &key_LOCK_global_active_sql, "LOCK_global_active_sql",
+    PSI_FLAG_SINGLETON, 0, PSI_DOCUMENT_ME},
   { &key_master_info_rotate_lock, "Master_info::rotate_lock", 0, 0, PSI_DOCUMENT_ME},
   { &key_mutex_slave_reporting_capability_err_lock, "Slave_reporting_capability::err_lock", 0, 0, PSI_DOCUMENT_ME},
   { &key_relay_log_info_data_lock, "Relay_log_info::data_lock", 0, 0, PSI_DOCUMENT_ME},
@@ -11740,10 +11913,13 @@ static PSI_mutex_info all_server_mutexes[]=
   { &key_LOCK_password_reuse_interval, "LOCK_password_reuse_interval", PSI_FLAG_SINGLETON, 0, PSI_DOCUMENT_ME},
   { &key_LOCK_keyring_operations, "LOCK_keyring_operations", PSI_FLAG_SINGLETON, 0, PSI_DOCUMENT_ME},
   { &key_LOCK_tls_ctx_options, "LOCK_tls_ctx_options", 0, 0, "A lock to control all of the --ssl-* CTX related command line options"},
-  { &key_LOCK_rotate_binlog_master_key, "LOCK_rotate_binlog_master_key", PSI_FLAG_SINGLETON, 0, PSI_DOCUMENT_ME}
+  { &key_LOCK_rotate_binlog_master_key, "LOCK_rotate_binlog_master_key", PSI_FLAG_SINGLETON, 0, PSI_DOCUMENT_ME},
+  { &key_LOCK_ac_node, "st_ac_node::lock", 0, 0, PSI_DOCUMENT_ME},
+  { &key_LOCK_ac_info, "Ac_info::lock", 0, 0, PSI_DOCUMENT_ME}
 };
 /* clang-format on */
 
+PSI_rwlock_key key_rwlock_LOCK_column_statistics;
 PSI_rwlock_key key_rwlock_LOCK_logger;
 PSI_rwlock_key key_rwlock_channel_map_lock;
 PSI_rwlock_key key_rwlock_channel_lock;
@@ -11759,12 +11935,15 @@ PSI_rwlock_key key_rwlock_Binlog_transmit_delegate_lock;
 PSI_rwlock_key key_rwlock_Binlog_relay_IO_delegate_lock;
 PSI_rwlock_key key_rwlock_resource_group_mgr_map_lock;
 PSI_rwlock_key key_rwlock_Raft_replication_delegate_lock;
+PSI_rwlock_key key_rwlock_LOCK_ac;
 
 /* clang-format off */
 static PSI_rwlock_info all_server_rwlocks[]=
 {
   { &key_rwlock_Binlog_transmit_delegate_lock, "Binlog_transmit_delegate::lock", PSI_FLAG_SINGLETON, 0, PSI_DOCUMENT_ME},
   { &key_rwlock_Binlog_relay_IO_delegate_lock, "Binlog_relay_IO_delegate::lock", PSI_FLAG_SINGLETON, 0, PSI_DOCUMENT_ME},
+  { &key_rwlock_LOCK_column_statistics, "LOCK_column_statistics",
+    PSI_FLAG_SINGLETON, 0, PSI_DOCUMENT_ME},
   { &key_rwlock_LOCK_logger, "LOGGER::LOCK_logger", 0, 0, PSI_DOCUMENT_ME},
   { &key_rwlock_LOCK_sys_init_connect, "LOCK_sys_init_connect", PSI_FLAG_SINGLETON, 0, PSI_DOCUMENT_ME},
   { &key_rwlock_LOCK_sys_init_slave, "LOCK_sys_init_slave", PSI_FLAG_SINGLETON, 0, PSI_DOCUMENT_ME},
@@ -11788,6 +11967,7 @@ static PSI_rwlock_info all_server_rwlocks[]=
 #endif // _WIN32
   { &key_rwlock_Raft_replication_delegate_lock,
     "Raft_replication_delegate::lock", PSI_FLAG_SINGLETON, 0, PSI_DOCUMENT_ME},
+  { &key_rwlock_LOCK_ac, "AC::rwlock", 0, 0, PSI_DOCUMENT_ME},
 };
 /* clang-format on */
 
@@ -11819,6 +11999,7 @@ PSI_cond_key key_hlc_wait_cond;
 PSI_cond_key key_COND_thr_lock;
 PSI_cond_key key_commit_order_manager_cond;
 PSI_cond_key key_cond_slave_worker_hash;
+PSI_cond_key key_COND_ac_node;
 
 /* clang-format off */
 static PSI_cond_info all_server_conds[]=
@@ -11863,7 +12044,8 @@ static PSI_cond_info all_server_conds[]=
   { &key_hlc_wait_cond, "HybridLogicalClock", PSI_FLAG_SINGLETON, 0, PSI_DOCUMENT_ME},
   { &key_COND_compress_gtid_table, "COND_compress_gtid_table", PSI_FLAG_SINGLETON, 0, PSI_DOCUMENT_ME},
   { &key_commit_order_manager_cond, "Commit_order_manager::m_workers.cond", 0, 0, PSI_DOCUMENT_ME},
-  { &key_cond_slave_worker_hash, "Relay_log_info::slave_worker_hash_lock", 0, 0, PSI_DOCUMENT_ME}
+  { &key_cond_slave_worker_hash, "Relay_log_info::slave_worker_hash_lock", 0, 0, PSI_DOCUMENT_ME},
+  { &key_COND_ac_node, "st_ac_node::cond", 0, 0, PSI_DOCUMENT_ME}
 };
 /* clang-format on */
 
@@ -12122,6 +12304,7 @@ PSI_stage_info *all_server_stages[] = {
     &stage_user_sleep,
     &stage_verifying_table,
     &stage_waiting_for_admission,
+    &stage_waiting_for_readmission,
     &stage_waiting_for_gtid_to_be_committed,
     &stage_waiting_for_handler_commit,
     &stage_waiting_for_master_to_send_event,
@@ -12141,9 +12324,8 @@ PSI_stage_info *all_server_stages[] = {
     &stage_hook_begin_trans,
     &stage_slave_waiting_for_dependencies,
     &stage_slave_waiting_for_dependency_workers,
-    &stage_waiting_for_disk_space,
-    &stage_waiting_for_hlc
-};
+    &stage_waiting_for_hlc,
+    &stage_waiting_for_disk_space};
 
 PSI_socket_key key_socket_tcpip;
 PSI_socket_key key_socket_unix;
@@ -12457,4 +12639,132 @@ bool get_slave_preserve_commit_order() {
   }
 
   return opt_slave_preserve_commit_order;
+}
+
+class Find_thd_with_os_id : public Find_THD_Impl {
+ public:
+  Find_thd_with_os_id(my_thread_os_id_t value) : m_id(value) {}
+  virtual bool operator()(THD *thd) {
+    my_thread_os_id_t id = thd->get_thread_os_id();
+    if (id == m_id) {
+      return true;
+    }
+    return false;
+  }
+
+  const my_thread_os_id_t m_id;
+};
+
+/**
+ * Set the priority of an OS thread.
+ *
+ * @param thread_priority_cptr  A string of the format os_thread_id:nice_val.
+ * @return                      true on success, false otherwise.
+ */
+bool set_thread_priority(char *thread_priority_cptr) {
+  // parse input to get thread_id and nice_val
+  std::string thd_id_nice_val_str(thread_priority_cptr);
+
+  if (thd_id_nice_val_str.empty()) {
+    return true;
+  }
+
+  std::size_t delimpos = thd_id_nice_val_str.find(':');
+  if (delimpos == std::string::npos) {
+    return false;
+  }
+  std::string thread_id_str(thd_id_nice_val_str, 0, delimpos);
+  std::string nice_val_str(thd_id_nice_val_str, delimpos + 1);
+  const char *nice_val_ptr = nice_val_str.c_str();
+  const char *thread_id_ptr = thread_id_str.c_str();
+
+  char *er;
+  long nice_val = strtol(nice_val_ptr, &er, 10);
+  if (er != nice_val_ptr + nice_val_str.length()) {
+    return false;
+  }
+
+  unsigned long thread_id = strtoul(thread_id_ptr, &er, 10);
+  if (er != thread_id_ptr + thread_id_str.length()) {
+    return false;
+  }
+
+  // Check whether nice_value is in a valid range
+  if (nice_val > 19 || nice_val < -20) {
+    /* NO_LINT_DEBUG */
+    sql_print_error(
+        "Nice value %ld is outside the valid "
+        "range of -19 to 20",
+        nice_val);
+    return false;
+  }
+
+  Find_thd_with_os_id find_thd_with_os_id(thread_id);
+  THD *thd = Global_THD_manager::get_instance()->find_thd(&find_thd_with_os_id);
+  if (thd != nullptr) {
+    return thd->set_thread_priority(nice_val);
+  }
+
+  return false;
+}
+
+/**
+ * Set a capability's flags.
+ * Effective capabilities of a thread are changed.
+ *
+ * @param capability  Capability to change. e.g. CAP_SYS_NICE
+ * @param flag        Flag to set. e.g. CAP_SET, CAP_CLEAR
+ * @return            true on success, false otherwise.
+ */
+static bool set_capability_flag(cap_value_t capability, cap_flag_value_t flag) {
+  DBUG_ENTER("set_capability_flag");
+
+  cap_value_t cap_list[] = {capability};
+  cap_t caps = cap_get_proc();
+  bool ret = true;
+
+  if (!caps || cap_set_flag(caps, CAP_EFFECTIVE, 1, cap_list, flag) ||
+      cap_set_proc(caps)) {
+    ret = false;
+  }
+
+  if (caps) {
+    cap_free(caps);
+  }
+
+  DBUG_RETURN(ret);
+}
+
+static bool acquire_capability(cap_value_t capability) {
+  return set_capability_flag(capability, CAP_SET);
+}
+
+static bool drop_capability(cap_value_t capability) {
+  return set_capability_flag(capability, CAP_CLEAR);
+}
+
+/**
+ * Sets a system thread priority.
+ * CAP_SYS_NICE capability is temporarily acquired if it does not already
+ * exist, and dropped after the setpriority() call is complete.
+ *
+ * @param tid  OS thread id.
+ * @param pri  Priority (nice value) to set the thread to.
+ * @return     true on success, false otherwise.
+ */
+bool set_system_thread_priority(pid_t tid, int pri) {
+  DBUG_ENTER("set_system_thread_priority");
+
+  bool ret = true;
+  acquire_capability(CAP_SYS_NICE);
+  if (setpriority(PRIO_PROCESS, tid, pri) == -1) {
+    ret = false;
+  }
+  drop_capability(CAP_SYS_NICE);
+
+  DBUG_RETURN(ret);
+}
+
+bool set_current_thread_priority() {
+  return current_thd->set_thread_priority();
 }

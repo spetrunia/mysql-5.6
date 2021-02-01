@@ -44,11 +44,18 @@ The following options may be given as the first argument:
  Number of milliseconds to wait on admission control
  queue. 0 means immediate timeout. -1 means infinite
  timeout.
+ --admission-control-wait-events=name 
+ Determines events for which queries will exit admission
+ control. After the wait event completes, the query will
+ have to re-enter admission control.
  --admission-control-weights[=name] 
  Determines the weight of each queue as a comma-separated
  list of integers, where the nth number is the nth queue's
  weight. The queue weight to total weight ratio determines
  what fraction of the running pool a queue can use.
+ --admission-control-yield-freq[=#] 
+ Controls how frequently a query exits admission control
+ to yield to other queries.
  --allow-noncurrent-db-rw=name 
  Switch to allow/deny reads and writes to a table not in
  the current database.
@@ -278,6 +285,14 @@ The following options may be given as the first argument:
  -r, --chroot=name   Chroot mysqld daemon during startup.
  --collation-server=name 
  Set the default collation.
+ --column-stats-control=name 
+ Control the collection of column statistics from parse
+ tree. The data is exposed via the column_statistics
+ table. Takes the following values: OFF_HARD: Default
+ value. Stop collecting the statistics and flush all
+ column statistics data from memory. OFF_SOFT: Stop
+ collecting column statistics, but retain any data
+ collected so far. ON: Collect the statistics.
  --commit-consensus-error-action[=name] 
  Defines the server action when a thread fails inside
  ordered commit due to consensus error
@@ -344,7 +359,6 @@ The following options may be given as the first argument:
  Limit CREATE TABLE for the storage engines listed
  --disallow-raft     Temporary variable wich blocks turning on raft. Will be
  removed later once raft is ready for 8.0
- (Defaults to on; use --skip-disallow-raft to disable.)
  --disconnect-on-expired-password 
  Give clients that don't signal password expiration
  support execution time error(s) instead of connection
@@ -778,6 +792,9 @@ The following options may be given as the first argument:
  connections from a host this host will be blocked from
  further connections
  --max-connections=# The number of simultaneous clients allowed
+ --max-db-connections=# 
+ The maximum number of connections allowed for a database.
+ If this value is 0, no such limits are applied.
  --max-delayed-threads=# 
  Don't start more than this number of threads to handle
  INSERT DELAYED statements. If set to zero INSERT DELAYED
@@ -823,6 +840,11 @@ The following options may be given as the first argument:
  Maximum stored procedure recursion depth
  --max-statement-time=# 
  redirects to max_execution_time
+ --max-tmp-disk-usage[=#] 
+ The max disk usage for filesort and tmp tables. An error
+ is raised if this limit is exceeded. 0 means no limit. -1
+ disables global tmp disk usage accounting and can only be
+ re-enabled after restart.
  --max-user-connections=# 
  The maximum number of active connections for a single
  user (0 = no limit)
@@ -1368,6 +1390,9 @@ The following options may be given as the first argument:
  When this option is enabled, connections attempted using
  insecure transport will be rejected.  Secure transports
  are SSL/TLS, Unix socket or Shared Memory (on Windows).
+ --reset-period-status-vars 
+ Enable atomic reset of period status vars when they are
+ shown.
  --reset-seconds-behind-master 
  When TRUE reset Seconds_Behind_Master to 0 when SQL
  thread catches up to the IO thread. This is the original
@@ -1402,6 +1427,9 @@ The following options may be given as the first argument:
  --rocksdb-allow-to-start-after-corruption 
  Allow server still to start successfully even if RocksDB
  corruption is detected.
+ --rocksdb-alter-column-default-inplace 
+ Allow inplace alter for alter column default operation
+ (Defaults to on; use --skip-rocksdb-alter-column-default-inplace to disable.)
  --rocksdb-blind-delete-primary-key 
  Deleting rows by primary key lookup, without reading rows
  (Blind Deletes). Blind delete is disabled if the table
@@ -1875,9 +1903,18 @@ The following options may be given as the first argument:
  sampling_frequency and max_trace_file_size are positive
  integers. The block accesses are saved to the
  rocksdb_datadir/block_cache_traces/trace_file_name.
+ --rocksdb-trace-queries=name 
+ Trace option string. The format is
+ sampling_frequency:max_trace_file_size:trace_file_name.
+ sampling_frequency and max_trace_file_size are positive
+ integers. The queries are saved to the
+ rocksdb_datadir/queries_traces/trace_file_name.
  --rocksdb-trace-sst-api 
  Generate trace output in the log for each call to the
  SstFileWriter
+ --rocksdb-track-and-verify-wals-in-manifest 
+ DBOptions::track_and_verify_wals_in_manifest for RocksDB
+ (Defaults to on; use --skip-rocksdb-track-and-verify-wals-in-manifest to disable.)
  --rocksdb-trx[=name] 
  Enable or disable ROCKSDB_TRX plugin. Possible values are
  ON, OFF, FORCE (don't start if the plugin fails to load).
@@ -1921,6 +1958,10 @@ The following options may be given as the first argument:
  --rocksdb-whole-key-filtering 
  BlockBasedTableOptions::whole_key_filtering for RocksDB
  (Defaults to on; use --skip-rocksdb-whole-key-filtering to disable.)
+ --rocksdb-write-batch-flush-threshold=# 
+ Maximum size of write batch in bytes before flushing.
+ Only valid if rocksdb_write_policy is WRITE_UNPREPARED. 0
+ means no limit.
  --rocksdb-write-batch-max-bytes=# 
  Maximum size of write batch in bytes. 0 means no limit.
  --rocksdb-write-disable-wal 
@@ -2178,10 +2219,29 @@ The following options may be given as the first argument:
  --sporadic-binlog-dump-fail 
  Option used by mysql-test for debugging and testing of
  replication.
+ --sql-duplicate-executions-control[=name] 
+ Controls how to handle duplicate executions of the same
+ SQL statement. It can take the following values: OFF:
+ Default value (not active). NOTE: Raise warning as note.
+ WARN: Raise warning. ERROR: Raise error and reject the
+ execution.
+ --sql-findings-control=name 
+ Provides a control to store findings from
+ optimizer/executing SQL statements. This data is exposed
+ through the SQL_FINDINGS table. It accepts the following
+ values: OFF_HARD: Default value. Stop collecting the
+ findings and flush all SQL findings related data from
+ memory. OFF_SOFT: Stop collecting the findings, but
+ retain any data collected so far. ON: Collect the SQL
+ findings.
  --sql-log-bin-triggers 
  The row changes generated by execution of triggers are
  not logged inbinlog if this option is false.
  (Defaults to on; use --skip-sql-log-bin-triggers to disable.)
+ --sql-maximum-duplicate-executions=# 
+ Used by MySQL to limit the number of duplicate SQL
+ statements Defaut is 0 and means the feature is turned
+ off
  --sql-mode=name     Syntax: sql-mode=mode[,mode[,mode...]]. See the manual
  for the complete list of valid sql modes
  --sql-require-primary-key 
@@ -2244,6 +2304,14 @@ The following options may be given as the first argument:
  --thread-handling=name 
  Define threads usage for handling queries, one of
  one-thread-per-connection, no-threads, loaded-dynamically
+ --thread-priority=# Set the priority of a thread. Changes the priority of the
+ current thread if set at the session level. Changes the
+ priority of all new threads if set at the global level.
+ The values are in the range -20 to 19, similar to nice.
+ --thread-priority-str[=name] 
+ Set the priority of a thread. The input format is
+ OSthreadId:PriValue. The priority values are in the range
+ -20 to 19, similar to nice.
  --thread-stack=#    The stack size for each thread
  --tls-ciphersuites=name 
  --tls-version=name  TLS version, permitted values are TLSv1, TLSv1.1,
@@ -2328,6 +2396,10 @@ The following options may be given as the first argument:
  values: OFF: Default value (disable write throttling).
  NOTE: Raise warning as note. WARN: Raise warning. ERROR:
  Raise error and abort query.
+ --write-cpu-limit-milliseconds[=#] 
+ Maximum CPU time (specified in milliseconds) limit for
+ DML queries. It can take integer values greater than or
+ equal to 0. The value 0 disables enforcing the limit.
  --write-start-throttle-lag-milliseconds[=#] 
  A replication lag higher than the value of this variable
  will enable throttling of write workload
@@ -2360,6 +2432,10 @@ The following options may be given as the first argument:
  --write-throttle-tag-only 
  If set to true, replication lag throttling will only
  throttle queries with query attribute mt_throttle_okay.
+ --write-time-check-batch[=#] 
+ Frequency (specified in number of rows) of checking
+ whether the CPU time of DML queries exceeded the limit
+ enforced by write_cpu_limit_milliseconds.
  --zstd-net-compression-level[=#] 
  Compression level for compressed protocol when zstd
  library is selected.
@@ -2373,7 +2449,9 @@ admission-control-by-trx FALSE
 admission-control-filter 
 admission-control-queue 0
 admission-control-queue-timeout -1
+admission-control-wait-events 
 admission-control-weights (No default value)
+admission-control-yield-freq 1000
 allow-noncurrent-db-rw ON
 allow-suspicious-udfs FALSE
 apply-log (No default value)
@@ -2423,6 +2501,7 @@ character-sets-dir MYSQL_CHARSETSDIR/
 check-proxy-users FALSE
 chroot (No default value)
 collation-server utf8mb4_0900_ai_ci
+column-stats-control OFF_HARD
 commit-consensus-error-action ROLLBACK_TRXS_IN_GROUP
 completion-type NO_CHAIN
 concurrent-insert AUTO
@@ -2445,7 +2524,7 @@ delayed-insert-timeout 300
 delayed-queue-size 1000
 disable-raft-log-repointing FALSE
 disabled-storage-engines 
-disallow-raft TRUE
+disallow-raft FALSE
 disconnect-on-expired-password TRUE
 disconnect-slave-event-count 0
 div-precision-increment 4
@@ -2568,6 +2647,7 @@ max-binlog-size 1073741824
 max-binlog-stmt-cache-size 18446744073709547520
 max-connect-errors 100
 max-connections 151
+max-db-connections 0
 max-delayed-threads 20
 max-digest-length 1024
 max-error-count 1024
@@ -2585,6 +2665,7 @@ max-slowlog-size 0
 max-sort-length 1024
 max-sp-recursion-depth 0
 max-statement-time 0
+max-tmp-disk-usage 0
 max-user-connections 0
 max-waiting-queries 0
 max-write-lock-count 18446744073709551615
@@ -2733,6 +2814,7 @@ report-password (No default value)
 report-port 0
 report-user (No default value)
 require-secure-transport FALSE
+reset-period-status-vars FALSE
 reset-seconds-behind-master TRUE
 response-attrs-contain-hlc FALSE
 rocksdb ON
@@ -2743,6 +2825,7 @@ rocksdb-allow-concurrent-memtable-write FALSE
 rocksdb-allow-mmap-reads FALSE
 rocksdb-allow-mmap-writes FALSE
 rocksdb-allow-to-start-after-corruption FALSE
+rocksdb-alter-column-default-inplace TRUE
 rocksdb-blind-delete-primary-key FALSE
 rocksdb-block-cache-size 536870912
 rocksdb-block-restart-interval 16
@@ -2895,7 +2978,9 @@ rocksdb-table-stats-sampling-pct 10
 rocksdb-table-stats-use-table-scan FALSE
 rocksdb-tmpdir 
 rocksdb-trace-block-cache-access 
+rocksdb-trace-queries 
 rocksdb-trace-sst-api FALSE
+rocksdb-track-and-verify-wals-in-manifest TRUE
 rocksdb-trx ON
 rocksdb-two-write-queues TRUE
 rocksdb-unsafe-for-binlog FALSE
@@ -2914,6 +2999,7 @@ rocksdb-wal-recovery-mode 2
 rocksdb-wal-size-limit-mb 0
 rocksdb-wal-ttl-seconds 0
 rocksdb-whole-key-filtering TRUE
+rocksdb-write-batch-flush-threshold 0
 rocksdb-write-batch-max-bytes 0
 rocksdb-write-disable-wal FALSE
 rocksdb-write-ignore-missing-column-families FALSE
@@ -2982,7 +3068,10 @@ slow-query-log FALSE
 slowlog-space-limit 0
 sort-buffer-size 262144
 sporadic-binlog-dump-fail FALSE
+sql-duplicate-executions-control OFF
+sql-findings-control OFF_HARD
 sql-log-bin-triggers TRUE
+sql-maximum-duplicate-executions 0
 sql-mode ONLY_FULL_GROUP_BY,STRICT_TRANS_TABLES,NO_ZERO_IN_DATE,NO_ZERO_DATE,ERROR_FOR_DIVISION_BY_ZERO,NO_ENGINE_SUBSTITUTION
 sql-require-primary-key FALSE
 stored-program-cache 256
@@ -3002,6 +3091,8 @@ temptable-max-ram 1073741824
 temptable-use-mmap TRUE
 thread-cache-size 9
 thread-handling one-thread-per-connection
+thread-priority 0
+thread-priority-str 
 thread-stack 262144
 tls-ciphersuites (No default value)
 tmp-table-size 16777216
@@ -3025,6 +3116,7 @@ wait-timeout 28800
 windowing-use-high-precision TRUE
 write-auto-throttle-frequency 0
 write-control-level OFF
+write-cpu-limit-milliseconds 0
 write-start-throttle-lag-milliseconds 86400000
 write-stats-count 0
 write-stats-frequency 0
@@ -3034,6 +3126,7 @@ write-throttle-min-ratio 1000
 write-throttle-monitor-cycles 1000
 write-throttle-patterns OFF
 write-throttle-tag-only FALSE
+write-time-check-batch 0
 zstd-net-compression-level 3
 
 To see what values a running MySQL server is using, type

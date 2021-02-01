@@ -37,6 +37,7 @@
 #include <stdarg.h>
 #include <stdio.h>
 #include <string.h>
+#include <set>
 #include <string>
 
 #include <memory>
@@ -67,6 +68,7 @@
 #include <string>
 
 #include "dur_prop.h"  // durability_properties
+#include "include/my_md5.h"
 #include "lex_string.h"
 #include "map_helpers.h"
 #include "my_base.h"
@@ -90,6 +92,7 @@
 #include "prealloced_array.h"
 #include "rpl_master.h"
 #include "sql/auth/sql_security_ctx.h"  // Security_context
+#include "sql/column_statistics_dt.h"
 #include "sql/current_thd.h"
 #include "sql/discrete_interval.h"   // Discrete_interval
 #include "sql/locked_tables_list.h"  // enum_locked_tables_mode
@@ -104,6 +107,7 @@
 #include "sql/rpl_lag_manager.h"
 #include "sql/session_tracker.h"  // Session_tracker
 #include "sql/snapshot.h"
+#include "sql/sql_admission_control.h"
 #include "sql/sql_connect.h"
 #include "sql/sql_const.h"
 #include "sql/sql_digest_stream.h"  // sql_digest_state
@@ -225,6 +229,12 @@ extern LEX_CSTRING NULL_CSTR;
   (yes, the sum is deliberately inaccurate)
 */
 constexpr size_t PREALLOC_NUM_HA = 15;
+
+/*
+  When the thread is killed, we store the reason why it is killed in this buffer
+  so that clients can understand why their queries fail
+*/
+constexpr size_t KILLED_REASON_MAX_LEN = 128;
 
 /**
   To be used for pool-of-threads (implemented differently on various OSs)
@@ -940,6 +950,9 @@ class THD : public MDL_context_owner,
   uint64_t hlc_time_ns_next = 0;
   bool should_write_hlc = false;
   database_container databases;
+
+  /* Column usage statistics for the SQL statements */
+  std::set<ColumnUsageInfo> column_usage_info;
 
   /* Nonsuper_connections reference counting */
  private:
@@ -2120,6 +2133,19 @@ class THD : public MDL_context_owner,
   */
   ulonglong m_stmt_total_write_time;
 
+  /**
+     DML row count for the transaction. This is incremented as the
+     DML operations take place
+  */
+  ha_rows m_trx_dml_row_count;
+
+  /* record that a warning that a DML cpu time exceeded the limit was raised */
+  bool m_trx_dml_cpu_time_limit_warning = false;
+
+  timespec m_trx_dml_start_time;
+
+  bool m_trx_dml_start_time_is_set = false;
+
  private:
   using explicit_snapshot_ptr = std::shared_ptr<explicit_snapshot>;
   explicit_snapshot_ptr m_explicit_snapshot;
@@ -2209,12 +2235,28 @@ class THD : public MDL_context_owner,
 
   void set_stmt_start_write_time();
 
+  ulong get_query_or_connect_attr_value(const char *attr_name,
+                                        ulong default_value, ulong max_value);
+
   void get_mt_keys_for_write_query(
       std::array<std::string, WRITE_STATISTICS_DIMENSION_COUNT> &keys);
 
   enum_control_level get_mt_throttle_tag_level() const;
 
   void set_sent_row_count(ha_rows count);
+
+  void set_trx_dml_row_count(ha_rows count) { m_trx_dml_row_count = count; }
+
+  ha_rows get_trx_dml_row_count() { return m_trx_dml_row_count; }
+
+  void set_trx_dml_cpu_time_limit_warning(bool val) {
+    m_trx_dml_cpu_time_limit_warning = val;
+  }
+
+  void set_trx_dml_start_time();
+
+  ulonglong get_trx_dml_write_time();
+  bool dml_execution_cpu_limit_exceeded();
 
   void inc_sent_row_count(ha_rows count);
   void inc_examined_row_count(ha_rows count);
@@ -2236,6 +2278,43 @@ class THD : public MDL_context_owner,
   void set_status_no_index_used();
   void set_status_no_good_index_used();
 
+  /* Reset status vars on REFRESH_STATUS. */
+  void reset_status_vars();
+
+  /* Adjust disk usage for current session. */
+  void adjust_filesort_disk_usage(longlong delta);
+  void adjust_tmp_table_disk_usage(longlong delta);
+  void propagate_pending_global_disk_usage();
+
+  /* Get current disk usage and peak. */
+  ulonglong get_filesort_disk_usage() { return m_filesort_disk_usage; }
+  ulonglong get_filesort_disk_usage_peak() {
+    return m_filesort_disk_usage_peak;
+  }
+  ulonglong get_tmp_table_disk_usage() { return m_tmp_table_disk_usage; }
+  ulonglong get_tmp_table_disk_usage_peak() {
+    return m_tmp_table_disk_usage_peak;
+  }
+
+ private:
+  /* Current filesort usage and peak since last reset. */
+  ulonglong m_filesort_disk_usage{0};
+  std::atomic<ulonglong> m_filesort_disk_usage_peak{0};
+
+  /* Current tmp table usage and peak since last reset. */
+  ulonglong m_tmp_table_disk_usage{0};
+  std::atomic<ulonglong> m_tmp_table_disk_usage_peak{0};
+
+  /* Reporting of session disk usage to global counters is done in batches
+     to avoid contention on global variables. */
+  std::atomic<longlong> m_unreported_global_filesort_delta{0};
+  std::atomic<longlong> m_unreported_global_tmp_table_delta{0};
+
+  /* Offsets for statement peak disk usage. */
+  ulonglong m_stmt_filesort_disk_usage_offset{0};
+  ulonglong m_stmt_tmp_table_disk_usage_offset{0};
+
+ public:
   std::unordered_map<std::string, enum_db_read_only> m_db_read_only_hash;
   const CHARSET_INFO *db_charset;
 
@@ -2254,6 +2333,64 @@ class THD : public MDL_context_owner,
   unsigned char *m_token_array;
   /** Top level statement digest. */
   sql_digest_state m_digest_state;
+
+  /** Types of keys used to track various attributes of a query
+      For each key we maintain an ID computed as a MD5 and a status
+      of whether the ID has been set or not (i.e, valid for read).
+      Both are stored in an array indexed by the corresponding enum value
+
+      SQL ID    = compute_digest_hash(statement digest)
+      Client ID = compute_md5_hash(client attributes)
+      Plan ID   = compute_md5_hash(sql plan)
+      SQL Hash  = compute_md5_hash(statement text + flags from QC)
+   */
+  enum enum_mt_key {
+    SQL_ID = 0,
+    CLIENT_ID = 1,
+    SQL_HASH = 2,
+    //    PLAN_ID   = 3
+    MT_KEY_MAX
+  };
+
+  digest_key mt_key_val[MT_KEY_MAX] = {};
+  std::atomic_bool mt_key_val_set[MT_KEY_MAX];
+
+  /* SQL_ID and SQL_PLAN may be accessed by another thread executing
+     SHOW PROCESSLIST or a SQL reading from I_S.PROCESSLIST
+  */
+  void mt_mutex_lock(enum_mt_key key_name) {
+    if (key_name == SQL_ID || key_name == CLIENT_ID
+        // || key_name == PLAN_ID
+    )
+      mysql_mutex_lock(&LOCK_thd_data);
+  }
+  void mt_mutex_unlock(enum_mt_key key_name) {
+    if (key_name == SQL_ID || key_name == CLIENT_ID
+        // || key_name == PLAN_ID
+    )
+      mysql_mutex_unlock(&LOCK_thd_data);
+  }
+  void mt_key_set(enum_mt_key key_name, const unsigned char *key_val,
+                  uint len) {
+    DBUG_ASSERT(key_name < MT_KEY_MAX && len <= DIGEST_HASH_SIZE);
+    mt_mutex_lock(key_name);
+    memcpy(mt_key_val[key_name].data(), key_val, len);
+    mt_key_val_set[key_name] = true;
+    mt_mutex_unlock(key_name);
+  }
+  bool mt_key_is_set(enum_mt_key key_name) {
+    DBUG_ASSERT(key_name < MT_KEY_MAX);
+    return mt_key_val_set[key_name];
+  }
+  digest_key &mt_key_value(enum_mt_key key_name) {
+    DBUG_ASSERT(key_name < MT_KEY_MAX);
+    return mt_key_val[key_name];
+  }
+  void mt_hex_value(enum_mt_key key_name, char *hex_val, uint len);
+  void mt_key_clear(enum_mt_key key_name) {
+    DBUG_ASSERT(key_name < MT_KEY_MAX);
+    mt_key_val_set[key_name] = false;
+  }
 
   /** Current statement instrumentation. */
   PSI_statement_locker *m_statement_psi;
@@ -2295,10 +2432,8 @@ class THD : public MDL_context_owner,
   my_thread_t real_id; /* For debugging */
                        /**
                          This counter is 32 bit because of the client protocol.
-
                          @note It is not meant to be used for my_thread_self(), see @c real_id for
                          this.
-
                          @note Set to reserved_thread_id on initialization. This is a magic
                          value that is only to be used for temporary THDs not present in
                          the global THD list.
@@ -2532,6 +2667,7 @@ class THD : public MDL_context_owner,
     KILLED_NO_VALUE /* means neither of the states */
   };
   std::atomic<killed_state> killed;
+  char *killed_reason;
 
   /**
     When operation on DD tables is in progress then THD is set to kill immune
@@ -2799,7 +2935,7 @@ class THD : public MDL_context_owner,
   enum_vio_type get_vio_type() const;
 
   void shutdown_active_vio();
-  void awake(THD::killed_state state_to_set);
+  void awake(THD::killed_state state_to_set, const char *reason = nullptr);
 
   /** Disconnect the associated communication endpoint. */
   void disconnect(bool server_shutdown = false);
@@ -2996,9 +3132,9 @@ class THD : public MDL_context_owner,
   */
   void finalize_session_trackers() {
     if (((locked_tables_mode != LTM_NONE) ||
-      mdl_context.has_locks(MDL_key::USER_LEVEL_LOCK)) &&
-      session_tracker.get_tracker(SESSION_STATE_CHANGE_TRACKER)
-          ->is_enabled()) {
+         mdl_context.has_locks(MDL_key::USER_LEVEL_LOCK)) &&
+        session_tracker.get_tracker(SESSION_STATE_CHANGE_TRACKER)
+            ->is_enabled()) {
       session_tracker.get_tracker(SESSION_STATE_CHANGE_TRACKER)
           ->mark_as_changed(this, NULL);
     }
@@ -4554,6 +4690,16 @@ class THD : public MDL_context_owner,
   /* whether the session is already in admission control for queries */
   bool is_in_ac = false;
   st_ac_node_ptr ac_node;
+  enum enum_admission_control_request_mode readmission_mode = AC_REQUEST_NONE;
+
+  ulonglong last_yield_counter = 0;
+  ulonglong yield_counter = 0;
+  ulonglong readmission_count = 0;
+
+  /**
+    Check if we should exit and reenter admission control.
+  */
+  void check_yield(std::function<bool()> cond);
 
  private:
   /**
@@ -4572,6 +4718,16 @@ class THD : public MDL_context_owner,
  public:
   bool is_system_user();
   void set_system_user(bool system_user_flag);
+
+  my_thread_os_id_t get_thread_os_id() const;
+
+  int get_thread_priority() const;
+
+  bool set_thread_priority(int pri);
+
+  bool set_thread_priority() {
+    return set_thread_priority(variables.thread_priority);
+  }
 };
 
 /**

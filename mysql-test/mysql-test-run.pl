@@ -111,6 +111,7 @@ my $opt_strace_client;
 my $opt_strace_server;
 my $opt_stress;
 my $opt_tmpdir;
+my $opt_tmpdir_force_short;
 my $opt_tmpdir_pid;
 my $opt_trace_protocol;
 my $opt_user_args;
@@ -226,7 +227,7 @@ our $opt_xml_report;
 #
 # Suites run by default (i.e. when invoking ./mtr without parameters)
 #
-our $DEFAULT_SUITES = "auth_sec,binlog_gtid,binlog_nogtid,clone,collations,connection_control,encryption,federated,funcs_2,gcol,grant,sysschema,gis,innodb,innodb_fts,innodb_gis,innodb_undo,innodb_zip,json,main,opt_trace,parts,perfschema,query_rewrite_plugins,rpl,rpl_gtid,rpl_nogtid,rpl_mts,rpl_mts_gtid,rpl_mts_nogtid,rpl_recovery,secondary_engine,service_status_var_registration,service_sys_var_registration,service_udf_registration,sys_vars,binlog,test_service_sql_api,test_services,x";
+our $DEFAULT_SUITES = "auth_sec,binlog_gtid,binlog_nogtid,clone,collations,column_statistics,connection_control,encryption,federated,funcs_2,gcol,grant,sysschema,gis,innodb,innodb_fts,innodb_gis,innodb_undo,innodb_zip,json,main,opt_trace,parts,perfschema,query_rewrite_plugins,rpl,rpl_gtid,rpl_nogtid,rpl_mts,rpl_mts_gtid,rpl_mts_nogtid,rpl_recovery,secondary_engine,service_status_var_registration,service_sys_var_registration,service_udf_registration,sys_vars,binlog,test_service_sql_api,test_services,x";
 
 # End of list of default suites
 
@@ -1580,6 +1581,7 @@ sub command_line_setup {
     'client-libdir=s' => \$path_client_libdir,
     'mem'             => \$opt_mem,
     'tmpdir=s'        => \$opt_tmpdir,
+    'tmpdir-force-short' => \$opt_tmpdir_force_short,
     'vardir=s'        => \$opt_vardir,
 
     # Misc
@@ -1938,8 +1940,8 @@ sub command_line_setup {
   if (!$opt_tmpdir) {
     $opt_tmpdir = "$opt_vardir/tmp" unless $opt_tmpdir;
 
-    my $res = check_socket_path_length("$opt_tmpdir/mysqld.NN.sock",
-                                       $opt_parallel);
+    my $res = $opt_tmpdir_force_short or
+      check_socket_path_length("$opt_tmpdir/mysqld.NN.sock", $opt_parallel);
 
     if ($res) {
       mtr_report("Too long tmpdir path '$opt_tmpdir'",
@@ -3198,8 +3200,9 @@ sub setup_vardir() {
   # On some operating systems, there is a limit to the length of a
   # UNIX domain socket's path far below PATH_MAX. Don't allow that
   # to happen.
-  my $res = check_socket_path_length("$opt_tmpdir/mysqld.NN.sock",
-                                     $opt_parallel);
+  # NOTE: At this point opt_tmpdir already have child sub dir so
+  # opt_parallel=1 to avoid double counting
+  my $res = check_socket_path_length("$opt_tmpdir/mysqld.NN.sock", 1);
   if ($res) {
     mtr_error("Socket path '$opt_tmpdir' too long, it would be ",
               "truncated and thus not possible to use for connection to ",
@@ -6277,21 +6280,11 @@ sub get_bootstrap_opts {
 sub server_need_reinitialization {
   my ($tinfo, $server) = @_;
   my $bootstrap_opts = get_bootstrap_opts($server, $tinfo);
-  my $started_boot_opts = $server->{'save_bootstrap_opts'};
 
-  # If previous test and current test have the same bootstrap
-  # options, do not reinitialize.
-  if ($bootstrap_opts and $started_boot_opts) {
-    if (My::Options::same($started_boot_opts, $bootstrap_opts)) {
-      if (defined $test_fail and $test_fail eq 'MTR_RES_FAILED') {
-        $server->{need_reinitialization} = 1;
-      } else {
-        $server->{need_reinitialization} = 0;
-      }
-    } else {
-      $server->{need_reinitialization} = 1;
-    }
-  } elsif ($bootstrap_opts) {
+  # Reinitialize if the current test has any bootstrap options. If the current
+  # test has no bootstrap options, then the default installed datadir is
+  # simply copied over.
+  if ($bootstrap_opts) {
     $server->{need_reinitialization} = 1;
   } else {
     $server->{need_reinitialization} = undef;
@@ -7527,7 +7520,7 @@ Options to control what test suites or cases to run
                         sysschema test suite. An empty sys database is
                         still created.
   skip-test-list=FILE   Skip the tests listed in FILE. Each line in the file
-                        is an entry and should be formatted as: 
+                        is an entry and should be formatted as:
                         <TESTNAME> : <COMMENT>
                         Multiple files can be passed in, each with a separate
                         skip-test-list option.
@@ -7585,7 +7578,7 @@ Options for test case authoring
   test-progress[={0|1}] Print the percentage of tests completed. This setting
                         is enabled by default. To disable it, set the value to
                         0. Argument to '--test-progress' is optional.
-                        
+
 
 Options that pass on options (these may be repeated)
 

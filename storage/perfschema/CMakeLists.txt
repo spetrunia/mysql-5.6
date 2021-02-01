@@ -72,6 +72,7 @@ pfs_variable.h
 pfs_visitor.h
 table_accounts.h
 table_all_instr.h
+table_column_statistics.h
 table_esgs_by_account_by_event_name.h
 table_esgs_by_host_by_event_name.h
 table_esgs_by_thread_by_event_name.h
@@ -163,6 +164,7 @@ table_replica_statistics.h
 table_write_statistics.h
 table_write_throttling_rules.h
 table_write_throttling_log.h
+table_sql_findings.h
 table_replication_connection_configuration.h
 table_replication_group_members.h
 table_replication_connection_status.h
@@ -219,6 +221,7 @@ service_pfs_notification.cc
 service_pfs_resource_group.cc
 table_accounts.cc
 table_all_instr.cc
+table_column_statistics.cc
 table_esgs_by_account_by_event_name.cc
 table_esgs_by_host_by_event_name.cc
 table_esgs_by_thread_by_event_name.cc
@@ -311,6 +314,7 @@ table_replica_statistics.cc
 table_write_statistics.cc
 table_write_throttling_rules.cc
 table_write_throttling_log.cc
+table_sql_findings.cc
 table_replication_connection_configuration.cc
 table_replication_group_members.cc
 table_replication_connection_status.cc

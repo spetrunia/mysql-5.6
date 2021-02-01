@@ -18375,19 +18375,17 @@ static void test_wl6791() {
   int rc;
   uint idx;
   MYSQL *l_mysql;
-  enum mysql_option uint_opts[] = {MYSQL_OPT_CONNECT_TIMEOUT,
-                                   MYSQL_OPT_READ_TIMEOUT,
-                                   MYSQL_OPT_WRITE_TIMEOUT,
-                                   MYSQL_OPT_PROTOCOL,
-                                   MYSQL_OPT_LOCAL_INFILE,
-                                   MYSQL_OPT_SSL_MODE},
-                    bool_opts[] = {MYSQL_OPT_COMPRESS,
-                                   MYSQL_REPORT_DATA_TRUNCATION,
-                                   MYSQL_OPT_RECONNECT,
-                                   MYSQL_ENABLE_CLEARTEXT_PLUGIN,
-                                   MYSQL_OPT_CAN_HANDLE_EXPIRED_PASSWORDS,
-                                   MYSQL_OPT_OPTIONAL_RESULTSET_METADATA},
-                    const_char_opts[] =
+  enum mysql_option
+      uint_opts[] = {MYSQL_OPT_CONNECT_TIMEOUT, MYSQL_OPT_READ_TIMEOUT,
+                     MYSQL_OPT_WRITE_TIMEOUT,   MYSQL_OPT_PROTOCOL,
+                     MYSQL_OPT_LOCAL_INFILE,    MYSQL_OPT_SSL_MODE},
+      bool_opts[] = {MYSQL_OPT_COMPRESS,
+                     MYSQL_REPORT_DATA_TRUNCATION,
+                     MYSQL_OPT_RECONNECT,
+                     MYSQL_ENABLE_CLEARTEXT_PLUGIN,
+                     MYSQL_OPT_CAN_HANDLE_EXPIRED_PASSWORDS,
+                     MYSQL_OPT_OPTIONAL_RESULTSET_METADATA},
+      const_char_opts[] =
   { MYSQL_READ_DEFAULT_FILE,
     MYSQL_READ_DEFAULT_GROUP,
     MYSQL_SET_CHARSET_DIR,
@@ -18409,9 +18407,13 @@ static void test_wl6791() {
     MYSQL_OPT_SSL_CRL,
     MYSQL_OPT_SSL_CRLPATH,
     MYSQL_SERVER_PUBLIC_KEY },
-                    err_opts[] = {
-                        MYSQL_OPT_NAMED_PIPE, MYSQL_OPT_CONNECT_ATTR_RESET,
-                        MYSQL_OPT_CONNECT_ATTR_DELETE, MYSQL_INIT_COMMAND};
+      err_opts[] = {MYSQL_OPT_NAMED_PIPE, MYSQL_OPT_CONNECT_ATTR_RESET,
+                    MYSQL_OPT_CONNECT_ATTR_DELETE, MYSQL_INIT_COMMAND},
+      pointer_opts[] = {
+#ifdef HAVE_OPENSSL
+          MYSQL_OPT_TLS_CERT_CALLBACK, MYSQL_OPT_TLS_CERT_CALLBACK_CONTEXT
+#endif
+      };
 
   myheader("test_wl6791");
 
@@ -18475,6 +18477,21 @@ static void test_wl6791() {
 
     rc = mysql_get_option(l_mysql, err_opts[idx], &dummy_arg);
     DIE_UNLESS(rc != 0);
+  }
+
+  for (idx = 0; idx < sizeof(pointer_opts) / sizeof(enum mysql_option); idx++) {
+    void *opt_before = reinterpret_cast<void *>(0x123456), *opt_after = NULL;
+
+    if (!opt_silent)
+      fprintf(stdout, "testing uint option #%d (%d)\n", idx,
+              static_cast<int>(pointer_opts[idx]));
+    rc = mysql_options(l_mysql, pointer_opts[idx], &opt_before);
+    DIE_UNLESS(rc == 0);
+
+    rc = mysql_get_option(l_mysql, pointer_opts[idx], &opt_after);
+    DIE_UNLESS(rc == 0);
+
+    DIE_UNLESS(opt_before == opt_after);
   }
 
   /* clean up */
@@ -20539,6 +20556,190 @@ static void test_get_connect_stage() {
   mysql_close(mysql_sync);
 }
 
+static void test_ssl_connect() {
+  MYSQL conn;
+  server_cert_validator_ptr validator;
+  const void *context = reinterpret_cast<const void *>(0x123456);
+
+  DBUG_ENTER("test_ssl_connect");
+  myheader("test_ssl_connect");
+
+  /* Checking that SSL connect works as expected */
+  if (!mysql_client_init_certs(&conn)) {
+    fprintf(stdout, "mysql_client_init_certs() failed\n");
+    DIE_UNLESS(0);
+  }
+
+  if (!mysql_try_connect(&conn)) {
+    fprintf(stdout, "Failed to connect using SSL\n");
+    DIE_UNLESS(0);
+  }
+  mysql_close(&conn);
+
+  /* Now let's configure a custom server cert validator callback */
+  /* No callback context specified so far */
+  if (!mysql_client_init_certs(&conn)) {
+    fprintf(stdout, "mysql_client_init_certs() failed\n");
+    DIE_UNLESS(0);
+  }
+
+  validator = server_cert_verifier_no_context;
+  mysql_options(&conn, MYSQL_OPT_TLS_CERT_CALLBACK,
+                reinterpret_cast<void *>(&validator));
+
+  if (!mysql_try_connect(&conn)) {
+    fprintf(stdout,
+            "Failed to connect using SSL with cert validator callback\n");
+    DIE_UNLESS(0);
+  }
+  mysql_close(&conn);
+
+  /* Testing callback context pointer propagation */
+  if (!mysql_client_init_certs(&conn)) {
+    fprintf(stdout, "mysql_client_init_certs() failed\n");
+    DIE_UNLESS(0);
+  }
+
+  validator = server_cert_verifier_with_context;
+  mysql_options(&conn, MYSQL_OPT_TLS_CERT_CALLBACK,
+                reinterpret_cast<void *>(&validator));
+  mysql_options(&conn, MYSQL_OPT_TLS_CERT_CALLBACK_CONTEXT,
+                reinterpret_cast<void *>(&context));
+
+  if (!mysql_try_connect(&conn)) {
+    fprintf(stdout,
+            "Failed to connect using SSL with cert validator callback and "
+            "context\n");
+    DIE_UNLESS(0);
+  }
+  mysql_close(&conn);
+
+  /* Testing callback context pointer propagation */
+  if (!mysql_client_init_certs(&conn)) {
+    fprintf(stdout, "mysql_client_init_certs() failed\n");
+    DIE_UNLESS(0);
+  }
+
+  validator = server_cert_verifier_fail;
+  mysql_options(&conn, MYSQL_OPT_TLS_CERT_CALLBACK,
+                reinterpret_cast<void *>(&validator));
+
+  if (mysql_try_connect(&conn)) {
+    fprintf(stdout,
+            "Connect succeeded using negative validator callback"
+            " - was expected to fail\n");
+    DIE_UNLESS(0);
+  }
+  mysql_close(&conn);
+
+  DBUG_VOID_RETURN;
+}
+
+static void test_ssl_connect_ctx() {
+  MYSQL conn;
+  SSL_CTX *ssl_ctx;
+  server_cert_validator_ptr validator;
+  const void *context = reinterpret_cast<const void *>(0x123456);
+
+  DBUG_ENTER("test_ssl_connect_ctx");
+  myheader("test_ssl_connect_ctx");
+
+  /* Check that we can connect using SSL_CTX */
+  if (!mysql_client_init(&conn)) {
+    fprintf(stdout, "mysql_client_init() failed\n");
+    DIE_UNLESS(0);
+  }
+
+  if (!(ssl_ctx = init_ssl_ctx())) {
+    fprintf(stdout, "SSL_CTX initialization error\n");
+    DIE_UNLESS(0);
+  }
+  mysql_options(&conn, MYSQL_OPT_SSL_CONTEXT, ssl_ctx);
+
+  if (!mysql_try_connect(&conn)) {
+    fprintf(stdout, "Failed to connect using SSL_CTX\n");
+    DIE_UNLESS(0);
+  }
+  mysql_close(&conn);
+  SSL_CTX_free(ssl_ctx);
+
+  /* Connect using SSL_CTX and server cert validation callback no context */
+  if (!mysql_client_init(&conn)) {
+    fprintf(stdout, "mysql_client_init() failed\n");
+    DIE_UNLESS(0);
+  }
+
+  if (!(ssl_ctx = init_ssl_ctx())) {
+    fprintf(stdout, "SSL_CTX initialization error\n");
+    DIE_UNLESS(0);
+  }
+  mysql_options(&conn, MYSQL_OPT_SSL_CONTEXT, ssl_ctx);
+  validator = server_cert_verifier_no_context;
+  mysql_options(&conn, MYSQL_OPT_TLS_CERT_CALLBACK,
+                reinterpret_cast<void *>(&validator));
+
+  if (!mysql_try_connect(&conn)) {
+    fprintf(stdout,
+            "Failed to connect using SSL_CTX with validation callback no "
+            "context\n");
+    DIE_UNLESS(0);
+  }
+  mysql_close(&conn);
+  SSL_CTX_free(ssl_ctx);
+
+  /* Connect using SSL_CTX and server cert validation callback with context */
+  if (!mysql_client_init(&conn)) {
+    fprintf(stdout, "mysql_client_init() failed\n");
+    DIE_UNLESS(0);
+  }
+
+  if (!(ssl_ctx = init_ssl_ctx())) {
+    fprintf(stdout, "SSL_CTX initialization error\n");
+    DIE_UNLESS(0);
+  }
+  mysql_options(&conn, MYSQL_OPT_SSL_CONTEXT, ssl_ctx);
+  validator = server_cert_verifier_with_context;
+  mysql_options(&conn, MYSQL_OPT_TLS_CERT_CALLBACK,
+                reinterpret_cast<void *>(&validator));
+  mysql_options(&conn, MYSQL_OPT_TLS_CERT_CALLBACK_CONTEXT,
+                reinterpret_cast<void *>(&context));
+
+  if (!mysql_try_connect(&conn)) {
+    fprintf(stdout,
+            "Failed to connect using SSL_CTX with validation callback with "
+            "context\n");
+    DIE_UNLESS(0);
+  }
+  mysql_close(&conn);
+  SSL_CTX_free(ssl_ctx);
+
+  /* Negative connection test using SSL_CTX */
+  if (!mysql_client_init(&conn)) {
+    fprintf(stdout, "mysql_client_init() failed\n");
+    DIE_UNLESS(0);
+  }
+
+  if (!(ssl_ctx = init_ssl_ctx())) {
+    fprintf(stdout, "SSL_CTX initialization error\n");
+    DIE_UNLESS(0);
+  }
+  mysql_options(&conn, MYSQL_OPT_SSL_CONTEXT, ssl_ctx);
+  validator = server_cert_verifier_fail;
+  mysql_options(&conn, MYSQL_OPT_TLS_CERT_CALLBACK,
+                reinterpret_cast<void *>(&validator));
+  mysql_options(&conn, MYSQL_OPT_TLS_CERT_CALLBACK_CONTEXT,
+                reinterpret_cast<void *>(&context));
+
+  if (mysql_try_connect(&conn)) {
+    fprintf(stdout, "Succeeded MySQL connect - was expected to fail.\n");
+    DIE_UNLESS(0);
+  }
+  mysql_close(&conn);
+  SSL_CTX_free(ssl_ctx);
+
+  DBUG_VOID_RETURN;
+}
+
 static struct my_tests_st my_tests[] = {
     {"disable_query_logs", disable_query_logs},
     {"test_view_sp_list_fields", test_view_sp_list_fields},
@@ -20822,6 +21023,8 @@ static struct my_tests_st my_tests[] = {
     {"test_wl11381", test_wl11381},
     {"test_wl11381_qa", test_wl11381_qa},
     {"test_get_connect_stage", test_get_connect_stage},
+    {"test_ssl_connect", test_ssl_connect},
+    {"test_ssl_connect_ctx", test_ssl_connect_ctx},
     {0, 0}};
 
 static struct my_tests_st *get_my_tests() { return my_tests; }

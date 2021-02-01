@@ -185,7 +185,7 @@ bool reset_seconds_behind_master = true;
 
 const char *relay_log_index = nullptr;
 const char *relay_log_basename = nullptr;
-
+std::weak_ptr<Rpl_applier_reader> global_applier_reader;
 /*
   MTS load-ballancing parameter.
   Max length of one MTS Worker queue. The value also determines the size
@@ -1337,11 +1337,11 @@ static Master_info* raft_get_default_mi();
  * to binlog name
  */
 int rli_relay_log_raft_reset(
-    std::pair<std::string, unsigned long long> raft_log_applied_upto_pos) {
+    std::pair<std::string, uint64_t> raft_log_applied_upto_pos, THD *thd) {
   DBUG_ENTER("rli_relay_log_raft_reset");
-  Master_info* mi = nullptr;
-  Relay_log_info* rli = nullptr;
-  Gtid_set* all_gtid_set = nullptr;
+  Master_info *mi = nullptr;
+  Relay_log_info *rli = nullptr;
+  Gtid_set *all_gtid_set = nullptr;
   int error = 0;
   std::string normalized_log_name;
 
@@ -1359,10 +1359,9 @@ int rli_relay_log_raft_reset(
 
   rli = mi->rli;
   normalized_log_name =
-    std::string(binlog_file_basedir_ptr) +
-    std::string(raft_log_applied_upto_pos.first.c_str() +
-        dirname_length(raft_log_applied_upto_pos.first.c_str()));
-
+      std::string(binlog_file_basedir_ptr) +
+      std::string(raft_log_applied_upto_pos.first.c_str() +
+                  dirname_length(raft_log_applied_upto_pos.first.c_str()));
 
   /*
     We need a mutex while we are changing master info parameters to
@@ -1392,13 +1391,14 @@ int rli_relay_log_raft_reset(
   mysql_mutex_lock(mi->rli->relay_log.get_log_lock());
   mi->rli->relay_log.lock_index();
 
-  mi->rli->relay_log.close(
-      LOG_CLOSE_INDEX, /*need_lock_log=*/false, /*need_lock_index=*/false);
+  mi->rli->relay_log.close(LOG_CLOSE_INDEX, /*need_lock_log=*/false,
+                           /*need_lock_index=*/false);
 
-  if (mi->rli->relay_log.open_index_file(
-        opt_binlog_index_name,
-        opt_bin_logname,
-        /*need_lock_index=*/false)) {
+  // open_index_file() will calculate index file full path(using 2nd argument)
+  // if 1st argument is nullptr. Otherwise, it will treat 1st arugment as index
+  // file full path.
+  if (mi->rli->relay_log.open_index_file(nullptr, opt_bin_logname,
+                                         /*need_lock_index=*/false)) {
     // NO_LINT_DEBUG
     sql_print_error("rli_relay_log_raft_reset::failed to open index file");
     error = 1;
@@ -1452,6 +1452,12 @@ int rli_relay_log_raft_reset(
   mi->rli->set_event_relay_log_pos(rli->get_group_relay_log_pos());
   mi->rli->set_event_relay_log_name(rli->get_group_relay_log_name());
 
+  // Register log to raft
+  // Previous mi->rli->relay_log.close(LOG_CLOSE_INDEX) will also close
+  // binlog and its IO_CACHE.
+  mi->rli->relay_log.register_log_entities(thd, /*context=*/0,
+                                           /*need_lock=*/false,
+                                           /*is_relay_log=*/true);
   mi->rli->relay_log.unlock_index();
   mysql_mutex_unlock(mi->rli->relay_log.get_log_lock());
 
@@ -1584,6 +1590,13 @@ int raft_reset_slave(THD *) {
   mysql_mutex_lock(&mi->rli->data_lock);
   mi->rli->inited = false;
   mi->flush_info(true);
+  /**
+    Clear the retrieved gtid set for this channel.
+  */
+  mi->rli->get_sid_lock()->wrlock();
+  (const_cast<Gtid_set *>(mi->rli->get_gtid_set()))->clear_set_and_sid_map();
+  mi->rli->get_sid_lock()->unlock();
+
   mysql_mutex_unlock(&mi->rli->data_lock);
   mysql_mutex_unlock(&mi->data_lock);
 
@@ -1609,6 +1622,7 @@ int raft_change_master(
           sizeof(mi->host) - 1);
   mi->port = master_instance.second;
   mi->set_auto_position(true);
+  mi->init_master_log_pos();
   mi->inited = true;
   mi->flush_info(true);
   mysql_mutex_unlock(&mi->data_lock);
@@ -7199,8 +7213,8 @@ extern "C" void *handle_slave_sql(void *arg) {
   bool mts_inited = false;
   Global_THD_manager *thd_manager = Global_THD_manager::get_instance();
   Commit_order_manager *commit_order_mngr = nullptr;
-  Rpl_applier_reader applier_reader(rli);
-
+  auto applier_reader = std::make_shared<Rpl_applier_reader>(rli);
+  global_applier_reader = applier_reader;
   // needs to call my_thread_init(), otherwise we get a coredump in DBUG_ stuff
   my_thread_init();
   DBUG_ENTER("handle_slave_sql");
@@ -7390,7 +7404,7 @@ extern "C" void *handle_slave_sql(void *arg) {
   rli->trans_retries = 0;  // start from "no error"
   DBUG_PRINT("info", ("rli->trans_retries: %lu", rli->trans_retries));
 
-  if (applier_reader.open(&errmsg)) {
+  if (applier_reader->open(&errmsg)) {
     rli->report(ERROR_LEVEL, ER_SLAVE_FATAL_ERROR, "%s", errmsg);
     goto err;
   }
@@ -7463,7 +7477,7 @@ extern "C" void *handle_slave_sql(void *arg) {
       saved_skip = 0;
     }
 
-    if (exec_relay_log_event(thd, rli, &applier_reader)) {
+    if (exec_relay_log_event(thd, rli, applier_reader.get())) {
       DBUG_PRINT("info", ("exec_relay_log_event() failed"));
 
       // do not scare the user if SQL thread was simply killed or stopped
@@ -7527,7 +7541,7 @@ err:
   mysql_mutex_lock(&rli->run_lock);
   /* We need data_lock, at least to wake up any waiting master_pos_wait() */
   mysql_mutex_lock(&rli->data_lock);
-  applier_reader.close();
+  applier_reader->close();
   DBUG_ASSERT(rli->slave_running == 1);  // tracking buffer overrun
   /* When master_pos_wait() wakes up it will check this and terminate */
   rli->slave_running = 0;
@@ -7584,7 +7598,6 @@ err:
   */
   mysql_thread_set_psi_THD(nullptr);
   delete thd;
-
   /*
    Note: the order of the broadcast and unlock calls below (first broadcast,
    then unlock) is important. Otherwise a killer_thread can execute between the

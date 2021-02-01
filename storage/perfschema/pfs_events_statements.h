@@ -75,6 +75,8 @@ struct PFS_events_statements : public PFS_events {
   uint m_sql_errno;
   /** Diagnostics area, @c SQLSTATE. */
   char m_sqlstate[SQLSTATE_LENGTH];
+  /** Diagnostics area, skipped count. */
+  uint m_skipped_count;
   /** Diagnostics area, error count. */
   uint m_error_count;
   /** Diagnostics area, warning count. */
@@ -130,6 +132,10 @@ struct PFS_events_statements : public PFS_events {
   ulonglong m_no_index_used;
   /** Optimizer metric, number of 'no good index used'. */
   ulonglong m_no_good_index_used;
+  /** Peak filesort disk usage by statement. */
+  ulonglong m_filesort_disk_usage_peak;
+  /** Peak temp table disk usage by statement. */
+  ulonglong m_tmp_table_disk_usage_peak;
 
   /** True if @c SQL_TEXT was truncated. */
   bool m_sqltext_truncated;

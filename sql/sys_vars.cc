@@ -91,6 +91,7 @@
 #include "sql/auth/auth_common.h"  // validate_user_plugins
 #include "sql/binlog.h"            // mysql_bin_log
 #include "sql/clone_handler.h"
+#include "sql/column_statistics.h"
 #include "sql/conn_handler/connection_handler_impl.h"  // Per_thread_connection_handler
 #include "sql/conn_handler/connection_handler_manager.h"  // Connection_handler_manager
 #include "sql/conn_handler/socket_connection.h"  // MY_BIND_ALL_ADDRESSES
@@ -2826,6 +2827,13 @@ static bool update_max_waiting_queries(
   return false;
 }
 
+static bool update_max_db_connections(
+    sys_var *self MY_ATTRIBUTE((unused)), THD *thd MY_ATTRIBUTE((unused)),
+    enum_var_type type MY_ATTRIBUTE((unused))) {
+  db_ac->update_max_connections(opt_max_db_connections);
+  return false;
+}
+
 static Sys_var_ulong Sys_max_running_queries(
     "max_running_queries",
     "The maximum number of running queries allowed for a database. "
@@ -2841,6 +2849,14 @@ static Sys_var_ulong Sys_max_waiting_queries(
     GLOBAL_VAR(opt_max_waiting_queries), CMD_LINE(REQUIRED_ARG),
     VALID_RANGE(0, 100000), DEFAULT(0), BLOCK_SIZE(1), NO_MUTEX_GUARD,
     NOT_IN_BINLOG, ON_CHECK(nullptr), ON_UPDATE(update_max_waiting_queries));
+
+static Sys_var_ulong Sys_max_db_connections(
+    "max_db_connections",
+    "The maximum number of connections allowed for a database. "
+    "If this value is 0, no such limits are applied.",
+    GLOBAL_VAR(opt_max_db_connections), CMD_LINE(REQUIRED_ARG),
+    VALID_RANGE(0, 100000), DEFAULT(0), BLOCK_SIZE(1), NO_MUTEX_GUARD,
+    NOT_IN_BINLOG, ON_CHECK(0), ON_UPDATE(update_max_db_connections));
 
 /*
   Do not add more than 63 entries here.
@@ -2894,6 +2910,23 @@ static Sys_var_charptr Sys_admission_control_weights(
     GLOBAL_VAR(admission_control_weights), CMD_LINE(OPT_ARG), IN_FS_CHARSET,
     DEFAULT(0), NO_MUTEX_GUARD, NOT_IN_BINLOG,
     ON_CHECK(check_admission_control_weights));
+
+const char *admission_control_wait_events_names[] = {
+    "SLEEP", "ROW_LOCK", "META_DATA_LOCK", "NET_IO", "YIELD", 0};
+static Sys_var_set Sys_admission_control_wait_events(
+    "admission_control_wait_events",
+    "Determines events for which queries will exit admission control. After "
+    "the wait event completes, the query will have to re-enter admission "
+    "control.",
+    GLOBAL_VAR(admission_control_wait_events), CMD_LINE(REQUIRED_ARG),
+    admission_control_wait_events_names, DEFAULT(0));
+
+static Sys_var_ulonglong Sys_admission_control_yield_freq(
+    "admission_control_yield_freq",
+    "Controls how frequently a query exits admission control to yield to "
+    "other queries.",
+    GLOBAL_VAR(admission_control_yield_freq), CMD_LINE(OPT_ARG),
+    VALID_RANGE(1, (ulonglong) ~(intptr)0), DEFAULT(1000), BLOCK_SIZE(1));
 
 static Sys_var_ulong Sys_max_connect_errors(
     "max_connect_errors",
@@ -3837,14 +3870,15 @@ static Sys_var_enum Sys_thread_handling(
     READ_ONLY GLOBAL_VAR(Connection_handler_manager::thread_handling),
     CMD_LINE(REQUIRED_ARG), thread_handling_names, DEFAULT(0));
 
-static bool check_allow_noncurrent_db_rw(sys_var * /* self */, THD * thd,
-                                              set_var *var) {
+static bool check_allow_noncurrent_db_rw(sys_var * /* self */, THD *thd,
+                                         set_var *var) {
   // allow_noncurrent_db_rw != OFF is only safe under the current implementation
-  // if enable_block_stale_hlc_read is OFF. A more general implementation could safely
-  // handle enable_block_stale_hlc_read != OFF in the future
-  uint64_t new_allow_noncurrent_db_rw= var->save_result.ulonglong_value;
-  if (thd->variables.enable_block_stale_hlc_read != 0 && new_allow_noncurrent_db_rw != 3)
-    return true; // Needs enable_block_stale_hlc_read == OFF
+  // if enable_block_stale_hlc_read is OFF. A more general implementation could
+  // safely handle enable_block_stale_hlc_read != OFF in the future
+  uint64_t new_allow_noncurrent_db_rw = var->save_result.ulonglong_value;
+  if (thd->variables.enable_block_stale_hlc_read != 0 &&
+      new_allow_noncurrent_db_rw != 3)
+    return true;  // Needs enable_block_stale_hlc_read == OFF
   return false;
 }
 
@@ -3855,8 +3889,8 @@ static Sys_var_enum Sys_allow_noncurrent_db_rw(
     "Switch to allow/deny reads and writes to a table not in the "
     "current database.",
     SESSION_VAR(allow_noncurrent_db_rw), CMD_LINE(REQUIRED_ARG),
-    allow_noncurrent_db_rw_levels, DEFAULT(0), NO_MUTEX_GUARD,
-    NOT_IN_BINLOG, ON_CHECK(check_allow_noncurrent_db_rw));
+    allow_noncurrent_db_rw_levels, DEFAULT(0), NO_MUTEX_GUARD, NOT_IN_BINLOG,
+    ON_CHECK(check_allow_noncurrent_db_rw));
 
 static Sys_var_charptr Sys_secure_file_priv(
     "secure_file_priv",
@@ -5923,15 +5957,13 @@ static Sys_var_bool Sys_gap_lock_write_log(
     SESSION_VAR(gap_lock_write_log), CMD_LINE(OPT_ARG), DEFAULT(false));
 
 bool set_gap_lock_exception_list(sys_var *, THD *, enum_var_type) {
-  const char* str = opt_gap_lock_exception_list;
+  const char *str = opt_gap_lock_exception_list;
 
-  if (str == nullptr)
-  {
+  if (str == nullptr) {
     str = "";
   }
 
-  if (!gap_lock_exceptions->set_patterns(str))
-  {
+  if (!gap_lock_exceptions->set_patterns(str)) {
     warn_about_bad_patterns(gap_lock_exceptions, "gap_lock_exceptions");
   }
 
@@ -6109,15 +6141,16 @@ static Sys_var_bool Sys_log_slave_updates(
     CMD_LINE(OPT_ARG, OPT_LOG_SLAVE_UPDATES), DEFAULT(1));
 
 static Sys_var_charptr Sys_apply_log(
-       "apply_log", "The location and name to use for apply logs for raft",
-       READ_ONLY NON_PERSIST GLOBAL_VAR(opt_apply_logname),
-       CMD_LINE(REQUIRED_ARG), IN_FS_CHARSET, DEFAULT(0));
+    "apply_log", "The location and name to use for apply logs for raft",
+    READ_ONLY NON_PERSIST GLOBAL_VAR(opt_apply_logname), CMD_LINE(REQUIRED_ARG),
+    IN_FS_CHARSET, DEFAULT(0));
 
 static Sys_var_charptr Sys_apply_log_index(
-       "apply_log_index", "The location and name to use for the file "
-       "that keeps a list of the last apply logs for raft",
-       READ_ONLY NON_PERSIST GLOBAL_VAR(opt_applylog_index_name),
-       CMD_LINE(REQUIRED_ARG), IN_FS_CHARSET, DEFAULT(0));
+    "apply_log_index",
+    "The location and name to use for the file "
+    "that keeps a list of the last apply logs for raft",
+    READ_ONLY NON_PERSIST GLOBAL_VAR(opt_applylog_index_name),
+    CMD_LINE(REQUIRED_ARG), IN_FS_CHARSET, DEFAULT(0));
 
 static Sys_var_charptr Sys_relay_log(
     "relay_log", "The location and name to use for relay logs",
@@ -7568,13 +7601,12 @@ static Sys_var_bool Sys_kill_conflicting_connections(
     DEFAULT(false));
 
 static Sys_var_ulong Sys_kill_conflicting_connections_timeout(
-   "kill_conflicting_connections_timeout",
-   "Timeout in seconds of holding lock after issuing killing conflicting "
-   "connections.",
-   SESSION_VAR(kill_conflicting_connections_timeout),
-   CMD_LINE(OPT_ARG),
-   VALID_RANGE(0, ULONG_MAX), DEFAULT(1), BLOCK_SIZE(1),
-   NO_MUTEX_GUARD, NOT_IN_BINLOG);
+    "kill_conflicting_connections_timeout",
+    "Timeout in seconds of holding lock after issuing killing conflicting "
+    "connections.",
+    SESSION_VAR(kill_conflicting_connections_timeout), CMD_LINE(OPT_ARG),
+    VALID_RANGE(0, ULONG_MAX), DEFAULT(1), BLOCK_SIZE(1), NO_MUTEX_GUARD,
+    NOT_IN_BINLOG);
 
 static Sys_var_bool Sys_slave_high_priority_ddl(
     "slave_high_priority_ddl",
@@ -7639,8 +7671,7 @@ static bool check_enable_binlog_hlc(sys_var * /* self */, THD * /* thd */,
     return true;  // Needs gtid mode to enable binlog hlc
 
   // if the feature is being turned off, then clear the map
-  if (!new_enable_binlog_hlc)
-    mysql_bin_log.clear_database_hlc();
+  if (!new_enable_binlog_hlc) mysql_bin_log.clear_database_hlc();
 
   return false;
 }
@@ -7655,8 +7686,7 @@ static bool check_maintain_database_hlc(sys_var *, THD *, set_var *var) {
   uint64_t new_maintain_db_hlc = var->save_result.ulonglong_value;
 
   // if the feature is being turned off, then clear the map
-  if (!new_maintain_db_hlc)
-    mysql_bin_log.clear_database_hlc();
+  if (!new_maintain_db_hlc) mysql_bin_log.clear_database_hlc();
 
   if (!enable_binlog_hlc && new_maintain_db_hlc)
     return true;  // Needs enable_binlog_hlc
@@ -7670,15 +7700,15 @@ static Sys_var_bool Sys_maintain_database_hlc(
     GLOBAL_VAR(maintain_database_hlc), CMD_LINE(OPT_ARG), DEFAULT(false),
     NO_MUTEX_GUARD, NOT_IN_BINLOG, ON_CHECK(check_maintain_database_hlc));
 
-	
-static bool check_enable_block_stale_hlc_read(sys_var * /* self */, THD * thd,
+static bool check_enable_block_stale_hlc_read(sys_var * /* self */, THD *thd,
                                               set_var *var) {
   // enable_block_stale_hlc_read is only safe under the current implementation
-  // if allow_noncurrent_db_rw is OFF. A more general implementation could safely
-  // handle allow_noncurrent_db_rw != OFF in the future
-  uint64_t new_enable_block_stale_hlc_read= var->save_result.ulonglong_value;
-  if (thd->variables.allow_noncurrent_db_rw != 3 && new_enable_block_stale_hlc_read != 0)
-    return true; // Needs allow_noncurrent_db_rw == OFF
+  // if allow_noncurrent_db_rw is OFF. A more general implementation could
+  // safely handle allow_noncurrent_db_rw != OFF in the future
+  uint64_t new_enable_block_stale_hlc_read = var->save_result.ulonglong_value;
+  if (thd->variables.allow_noncurrent_db_rw != 3 &&
+      new_enable_block_stale_hlc_read != 0)
+    return true;  // Needs allow_noncurrent_db_rw == OFF
   return false;
 }
 
@@ -7714,7 +7744,6 @@ static Sys_var_ulong Sys_wait_for_hlc_sleep_threshold_ms(
     VALID_RANGE(0, 10000), DEFAULT(50), BLOCK_SIZE(1), NO_MUTEX_GUARD,
     NOT_IN_BINLOG);
 
-
 static Sys_var_bool Sys_fast_integer_to_string(
     "fast_integer_to_string",
     "Optimized implementation of integer to string conversion",
@@ -7722,7 +7751,8 @@ static Sys_var_bool Sys_fast_integer_to_string(
 
 static Sys_var_bool Sys_enable_super_log_bin_read_only(
     "enable_super_log_bin_read_only",
-    "If set, prevents super from writing to a read_only instance when sql_log_bin is also enabled",
+    "If set, prevents super from writing to a read_only instance when "
+    "sql_log_bin is also enabled",
     GLOBAL_VAR(enable_super_log_bin_read_only), CMD_LINE(OPT_ARG),
     DEFAULT(false), NO_MUTEX_GUARD, NOT_IN_BINLOG, ON_CHECK(NULL),
     ON_UPDATE(NULL));
@@ -7740,7 +7770,8 @@ static Sys_var_bool Sys_rpl_slave_flow_control(
     GLOBAL_VAR(rpl_slave_flow_control), CMD_LINE(OPT_ARG), DEFAULT(true));
 
 static Sys_var_bool Sys_enable_query_checksum(
-    "enable_query_checksum", "Enable query checksums for queries that have "
+    "enable_query_checksum",
+    "Enable query checksums for queries that have "
     "the checksum query attribute set. Uses a CRC32 checksum of the "
     "query contents, but not the attributes",
     GLOBAL_VAR(enable_query_checksum), CMD_LINE(OPT_ARG), DEFAULT(false));
@@ -7750,7 +7781,6 @@ static Sys_var_bool Sys_enable_resultset_checksum(
     "Enable CRC32 resultset checksums if requested by the client sending the "
     "checksum query attribute, set to the query checksum",
     GLOBAL_VAR(enable_resultset_checksum), CMD_LINE(OPT_ARG), DEFAULT(false));
-
 
 static const char *query_cache_type_names[] = {"OFF", "ON", "DEMAND", 0};
 
@@ -7844,23 +7874,21 @@ static bool validate_enable_raft(sys_var * /*self */, THD *, set_var *var) {
   return err;
 }
 
-static bool log_enable_raft_change(
-    sys_var * /*self */, THD *thd, enum_var_type) {
-  const char *user = "unknown";  const char *host = "unknown";
+static bool log_enable_raft_change(sys_var * /*self */, THD *thd,
+                                   enum_var_type) {
+  const char *user = "unknown";
+  const char *host = "unknown";
 
   if (thd && thd->get_user_connect()) {
-    user = (const_cast<USER_CONN*>(thd->get_user_connect()))->user;
-    host = (const_cast<USER_CONN*>(thd->get_user_connect()))->host;
+    user = (const_cast<USER_CONN *>(thd->get_user_connect()))->user;
+    host = (const_cast<USER_CONN *>(thd->get_user_connect()))->host;
   }
 
   // NO_LINT_DEBUG
   sql_print_information(
-    "Setting global variable: "
-    "enable_raft_plugin = %d (user '%s' from '%s')",
-    enable_raft_plugin,
-    user,
-    host
-    );
+      "Setting global variable: "
+      "enable_raft_plugin = %d (user '%s' from '%s')",
+      enable_raft_plugin, user, host);
 
   return false;
 }
@@ -7877,7 +7905,7 @@ static Sys_var_bool Sys_disallow_raft(
     "disallow_raft",
     "Temporary variable wich blocks turning on raft. Will be removed later "
     "once raft is ready for 8.0",
-    GLOBAL_VAR(disallow_raft), CMD_LINE(OPT_ARG), DEFAULT(true));
+    GLOBAL_VAR(disallow_raft), CMD_LINE(OPT_ARG), DEFAULT(false));
 
 static Sys_var_bool Sys_override_enable_raft_check(
     "override_enable_raft_check",
@@ -7930,20 +7958,22 @@ static Sys_var_flagset Sys_use_fb_json_functions(
     SESSION_VAR(use_fb_json_functions), CMD_LINE(REQUIRED_ARG),
     use_fb_json_functions_names, DEFAULT(0));
 
-static bool check_enable_acl_fast_lookup(sys_var * /*self*/, THD *thd, set_var * /*var*/) {
+static bool check_enable_acl_fast_lookup(sys_var * /*self*/, THD *thd,
+                                         set_var * /*var*/) {
   /*
     Any change to this variable would need to trigger ACL reloading -
     we need to make sure if the user has access to reload ACL
    */
-  return check_global_access(thd,RELOAD_ACL);
+  return check_global_access(thd, RELOAD_ACL);
 }
 
-static bool check_enable_acl_db_cache(sys_var * /*self*/, THD *thd, set_var * /*var*/) {
+static bool check_enable_acl_db_cache(sys_var * /*self*/, THD *thd,
+                                      set_var * /*var*/) {
   /*
     Any change to this variable would need to trigger ACL reloading -
     we need to make sure if the user has access to reload ACL
    */
-  return check_global_access(thd,RELOAD_ACL);
+  return check_global_access(thd, RELOAD_ACL);
 }
 
 static Sys_var_bool Sys_enable_acl_fast_lookup(
@@ -8115,3 +8145,156 @@ static Sys_var_ulong Sys_write_auto_throttle_frequency(
     GLOBAL_VAR(write_auto_throttle_frequency), CMD_LINE(OPT_ARG),
     VALID_RANGE(0, LONG_TIMEOUT), DEFAULT(0), BLOCK_SIZE(1), NO_MUTEX_GUARD,
     NOT_IN_BINLOG, ON_CHECK(nullptr), ON_UPDATE(nullptr));
+
+static Sys_var_uint Sys_write_cpu_limit_milliseconds(
+    "write_cpu_limit_milliseconds",
+    "Maximum CPU time (specified in milliseconds) limit for DML queries. It "
+    "can take integer values greater than or equal to 0. The value 0 disables "
+    "enforcing the limit.",
+    GLOBAL_VAR(write_cpu_limit_milliseconds), CMD_LINE(OPT_ARG),
+    VALID_RANGE(0, UINT_MAX), DEFAULT(0), BLOCK_SIZE(1));
+
+static Sys_var_uint Sys_write_time_check_batch(
+    "write_time_check_batch",
+    "Frequency (specified in number of rows) of checking whether the CPU "
+    "time of DML queries exceeded the limit enforced by "
+    "write_cpu_limit_milliseconds.",
+    GLOBAL_VAR(write_time_check_batch), CMD_LINE(OPT_ARG),
+    VALID_RANGE(0, UINT_MAX), DEFAULT(0), BLOCK_SIZE(1));
+
+static const char *sql_info_control_values[] = {
+    "OFF_HARD", "OFF_SOFT", "ON",
+    /* Add new control before the following line */
+    0};
+
+static bool set_sql_findings_control(sys_var *, THD *, enum_var_type) {
+  if (sql_findings_control == SQL_INFO_CONTROL_OFF_HARD) {
+    free_global_sql_findings();
+  }
+
+  return false;  // success
+}
+
+static Sys_var_enum Sys_sql_findings_control(
+    "sql_findings_control",
+    "Provides a control to store findings from optimizer/executing SQL "
+    "statements. This data is exposed through the SQL_FINDINGS table. "
+    "It accepts the following values: "
+    "OFF_HARD: Default value. Stop collecting the findings and flush "
+    "all SQL findings related data from memory. "
+    "OFF_SOFT: Stop collecting the findings, but retain any data "
+    "collected so far. "
+    "ON: Collect the SQL findings.",
+    GLOBAL_VAR(sql_findings_control), CMD_LINE(REQUIRED_ARG),
+    sql_info_control_values, DEFAULT(SQL_INFO_CONTROL_OFF_HARD), NO_MUTEX_GUARD,
+    NOT_IN_BINLOG, ON_CHECK(nullptr), ON_UPDATE(set_sql_findings_control));
+
+static bool set_column_stats_control(sys_var *, THD *, enum_var_type) {
+  if (column_stats_control == SQL_INFO_CONTROL_OFF_HARD) {
+    free_column_stats();
+  }
+
+  return false;  // success
+}
+
+static Sys_var_enum Sys_column_stats_control(
+    "column_stats_control",
+    "Control the collection of column statistics from parse tree. "
+    "The data is exposed via the column_statistics table. "
+    "Takes the following values: "
+    "OFF_HARD: Default value. Stop collecting the statistics and flush "
+    "all column statistics data from memory. "
+    "OFF_SOFT: Stop collecting column statistics, but retain any data "
+    "collected so far. "
+    "ON: Collect the statistics.",
+    GLOBAL_VAR(column_stats_control), CMD_LINE(REQUIRED_ARG),
+    sql_info_control_values, DEFAULT(SQL_INFO_CONTROL_OFF_HARD), NO_MUTEX_GUARD,
+    NOT_IN_BINLOG, ON_CHECK(nullptr), ON_UPDATE(set_column_stats_control));
+
+static bool check_max_tmp_disk_usage(sys_var *self MY_ATTRIBUTE((unused)),
+                                     THD *thd MY_ATTRIBUTE((unused)),
+                                     set_var *var) {
+  if (max_tmp_disk_usage == TMP_DISK_USAGE_DISABLED &&
+      var->save_result.ulonglong_value != TMP_DISK_USAGE_DISABLED)
+    /* Enabling at runtime is not allowed. */
+    return true;
+
+  return false;
+}
+
+static Sys_var_longlong Sys_max_tmp_disk_usage(
+    "max_tmp_disk_usage",
+    "The max disk usage for filesort and tmp tables. An error is raised "
+    "if this limit is exceeded. 0 means no limit. -1 disables global "
+    "tmp disk usage accounting and can only be re-enabled after restart.",
+    GLOBAL_VAR(max_tmp_disk_usage), CMD_LINE(OPT_ARG),
+    VALID_RANGE(-1, LONG_LONG_MAX), DEFAULT(0), BLOCK_SIZE(1), NO_MUTEX_GUARD,
+    NOT_IN_BINLOG, ON_CHECK(check_max_tmp_disk_usage));
+
+static Sys_var_bool Sys_reset_period_status_vars(
+    "reset_period_status_vars",
+    "Enable atomic reset of period status vars "
+    "when they are shown.",
+    SESSION_ONLY(reset_period_status_vars), CMD_LINE(OPT_ARG), DEFAULT(false));
+
+static bool update_thread_priority_str(sys_var *, THD *, set_var *var) {
+  return !set_thread_priority(var->save_result.string_value.str);
+}
+
+static Sys_var_charptr Sys_thread_priority_str(
+    "thread_priority_str",
+    "Set the priority of a thread. "
+    "The input format is OSthreadId:PriValue. "
+    "The priority values are in the range -20 to 19, similar to nice.",
+    GLOBAL_VAR(thread_priority_str), CMD_LINE(OPT_ARG), IN_SYSTEM_CHARSET,
+    DEFAULT(""), NO_MUTEX_GUARD, NOT_IN_BINLOG,
+    ON_CHECK(update_thread_priority_str));
+
+static bool update_thread_priority(sys_var *, THD *, enum_var_type type) {
+  if (type == OPT_GLOBAL) return false;
+  return !set_current_thread_priority();
+}
+
+static Sys_var_long Sys_thread_priority(
+    "thread_priority",
+    "Set the priority of a thread. "
+    "Changes the priority of the current thread if set at the session level. "
+    "Changes the priority of all new threads if set at the global level. "
+    "The values are in the range -20 to 19, similar to nice.",
+    SESSION_VAR(thread_priority), CMD_LINE(REQUIRED_ARG), VALID_RANGE(-20, 19),
+    DEFAULT(0), BLOCK_SIZE(1), NO_MUTEX_GUARD, NOT_IN_BINLOG, ON_CHECK(NULL),
+    ON_UPDATE(update_thread_priority));
+
+/*
+** sql_maximum_duplicate_executions
+*/
+static bool set_sql_max_dup_exe(sys_var *, THD *, enum_var_type)
+{
+  if (sql_maximum_duplicate_executions == 0)
+    free_global_active_sql();
+
+  return false;  // success
+}
+
+static Sys_var_uint Sys_sql_maximum_duplicate_executions(
+    "sql_maximum_duplicate_executions",
+    "Used by MySQL to limit the number of duplicate SQL statements "
+    "Defaut is 0 and means the feature is turned off",
+    GLOBAL_VAR(sql_maximum_duplicate_executions),
+    CMD_LINE(REQUIRED_ARG), VALID_RANGE(0, UINT_MAX),
+    DEFAULT(0), BLOCK_SIZE(1), NO_MUTEX_GUARD, NOT_IN_BINLOG,
+    ON_CHECK(nullptr), ON_UPDATE(set_sql_max_dup_exe));
+
+static Sys_var_enum Sys_sql_duplicate_executions_control(
+    "sql_duplicate_executions_control",
+    "Controls how to handle duplicate executions of the same SQL "
+    "statement. It can take the following values: "
+    "OFF: Default value (not active). "
+    "NOTE: Raise warning as note. "
+    "WARN: Raise warning. "
+    "ERROR: Raise error and reject the execution.",
+    GLOBAL_VAR(sql_duplicate_executions_control), CMD_LINE(OPT_ARG),
+    control_level_values,
+    DEFAULT(CONTROL_LEVEL_OFF),
+    NO_MUTEX_GUARD, NOT_IN_BINLOG, ON_CHECK(NULL),
+    ON_UPDATE(NULL));

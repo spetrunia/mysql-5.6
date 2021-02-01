@@ -42,6 +42,7 @@
 #include "my_dbug.h"
 #include "my_md5.h"
 #include "my_md5_size.h"
+#include "my_thread_os_id.h"
 #include "mysql/components/services/log_builtins.h"  // LogErr
 #include "mysql/components/services/psi_error_bits.h"
 #include "mysql/psi/mysql_cond.h"
@@ -465,6 +466,7 @@ THD::THD(bool enable_plugins, bool is_slave)
   query_start_usec_used = false;
   check_for_truncated_fields = CHECK_FIELD_IGNORE;
   killed = NOT_KILLED;
+  killed_reason = NULL;
   col_access = 0;
   is_slave_error = thread_specific_used = false;
   tmp_table = 0;
@@ -592,7 +594,7 @@ void THD::set_transaction(Transaction_ctx *transaction_ctx) {
   m_transaction.reset(transaction_ctx);
 }
 
-static std::string get_shard_id(const std::string& db_metadata) {
+static std::string get_shard_id(const std::string &db_metadata) {
   try {
     rapidjson::Document db_metadata_root;
     // The local_db_metadata format should be:
@@ -918,7 +920,7 @@ void THD::init(bool is_slave) {
   update_charset();
   reset_current_stmt_binlog_format_row();
   reset_binlog_local_stmt_filter();
-  memset(&status_var, 0, sizeof(status_var));
+  reset_system_status_vars(&status_var);
   binlog_row_event_extra_data = 0;
 
   if (variables.sql_log_bin)
@@ -942,7 +944,14 @@ void THD::init(bool is_slave) {
 
   // This will clear the writeset session history.
   rpl_thd_ctx.dependency_tracker_ctx().set_last_session_sequence_number(0);
+
+  mt_key_clear(THD::SQL_ID);
+  mt_key_clear(THD::SQL_HASH);
+  mt_key_clear(THD::CLIENT_ID);
   reset_stmt_stats();
+  set_trx_dml_row_count(0);
+  set_trx_dml_cpu_time_limit_warning(false);
+  m_trx_dml_start_time_is_set = false;
 }
 
 /**
@@ -952,6 +961,13 @@ void THD::reset_stmt_stats() {
   m_binlog_bytes_written = 0; /* binlog bytes written */
   m_stmt_total_write_time = 0;
   m_stmt_start_write_time_is_set = false;
+
+  /* The disk usage of a single statement is the difference between the peak
+     session usage during the statement execution and the session usage at
+     the start of the statement. So remember disk usage at the start and
+     use it to offset the peak. */
+  m_stmt_filesort_disk_usage_offset = m_filesort_disk_usage;
+  m_stmt_tmp_table_disk_usage_offset = m_tmp_table_disk_usage;
 }
 
 void THD::init_query_mem_roots() {
@@ -977,18 +993,22 @@ void THD::set_new_thread_id() {
 */
 
 void THD::cleanup_connection(void) {
+  cleanup();
+  killed = NOT_KILLED;
+  cleanup_done = 0;
+
+  /* Aggregate to global status now that cleanup is done. */
   mysql_mutex_lock(&LOCK_status);
   add_to_status(&global_status_var, &status_var);
   reset_system_status_vars(&status_var);
   mysql_mutex_unlock(&LOCK_status);
 
-  cleanup();
+  propagate_pending_global_disk_usage();
+
 #if defined(ENABLED_DEBUG_SYNC)
   /* End the Debug Sync Facility. See debug_sync.cc. */
   debug_sync_end_thread(this);
 #endif /* defined(ENABLED_DEBUG_SYNC) */
-  killed = NOT_KILLED;
-  cleanup_done = 0;
   init(/* is_slave = */ false);
   stmt_map.reset();
   user_vars.clear();
@@ -1184,10 +1204,7 @@ void THD::release_resources() {
 
   /* if we are still in admission control, release it */
   if (is_in_ac) {
-    MT_RESOURCE_ATTRS attrs = {&connection_attrs_map, &query_attrs_list,
-                               m_db.str};
-    multi_tenancy_exit_query(this, &attrs);
-    is_in_ac = false;
+    multi_tenancy_exit_query(this);
   }
 
   /* Close connection */
@@ -1252,6 +1269,8 @@ void THD::release_resources() {
 
   mysql_mutex_unlock(&LOCK_status);
 
+  propagate_pending_global_disk_usage();
+
   m_release_resources_done = true;
 }
 
@@ -1310,6 +1329,9 @@ THD::~THD() {
   if (m_token_array != NULL) {
     my_free(m_token_array);
   }
+  if (killed_reason != NULL) {
+    my_free(killed_reason);
+  }
   DBUG_VOID_RETURN;
 }
 
@@ -1323,7 +1345,7 @@ THD::~THD() {
   @note Do always call this while holding LOCK_thd_data.
 */
 
-void THD::awake(THD::killed_state state_to_set) {
+void THD::awake(THD::killed_state state_to_set, const char *reason) {
   DBUG_ENTER("THD::awake");
   DBUG_PRINT("enter", ("this: %p current_thd: %p", this, current_thd));
   THD_CHECK_SENTRY(this);
@@ -1355,6 +1377,21 @@ void THD::awake(THD::killed_state state_to_set) {
   if (this->m_server_idle && state_to_set == KILL_QUERY) { /* nothing */
   } else {
     killed = state_to_set;
+    if (reason) {
+      static constexpr int len = KILLED_REASON_MAX_LEN;
+      if (!killed_reason) {
+        killed_reason = (char *)my_malloc(PSI_NOT_INSTRUMENTED, len, MYF(0));
+      }
+      if (killed_reason) {
+        strncpy(killed_reason, reason, len - 1);
+        killed_reason[len - 1] = '\0';
+      }
+    } else {
+      if (killed_reason && killed_reason[0] != '\0') {
+        // no reason is given, let's clean up previous killed_reason
+        killed_reason[0] = '\0';
+      }
+    }
   }
 
   if (state_to_set != THD::KILL_QUERY && state_to_set != THD::KILL_TIMEOUT) {
@@ -2016,7 +2053,17 @@ void THD::send_kill_message() const {
       JOIN::optimize(), statement cannot possibly run as its caller expected
       => "OK" would be misleading the caller.
     */
-    my_error(err, MYF(ME_FATALERROR));
+    if (err == ER_QUERY_INTERRUPTED) {
+      std::string reason;
+      if (killed_reason && killed_reason[0] != '\0') {
+        reason.append(", reason: ");
+        reason.append(killed_reason);
+      }
+      my_printf_error(err, "%s%s", MYF(ME_FATALERROR), ER_THD(this, err),
+                      reason.c_str());
+    } else {
+      my_error(err, MYF(ME_FATALERROR));
+    }
   }
 }
 
@@ -2075,8 +2122,8 @@ void THD::get_trans_marker(int64_t *term, int64_t *index) const {
   /* The get and set (below) is used and called today serially during different
    * stages of ordered commit. Hence the get and set are mutually exlusive. If
    * this changes later, then we may need to protect these by locks */
-  *term= term_;
-  *index= index_;
+  *term = term_;
+  *index = index_;
 }
 
 void THD::set_trans_marker(int64_t term, int64_t index) {
@@ -2254,6 +2301,20 @@ void THD::restore_sub_statement_state(Sub_statement_state *backup) {
   DBUG_VOID_RETURN;
 }
 
+void THD::check_yield(std::function<bool()> cond) {
+  DBUG_ASSERT(last_yield_counter <= yield_counter);
+  yield_counter++;
+  // We pass cond as a callback because cond() could be expensive, so it should
+  // only be called after we've determined that we are eligible for yielding.
+  // Hence, we call cond() after checking yield counters here.
+  if (last_yield_counter + admission_control_yield_freq < yield_counter &&
+      cond()) {
+    thd_wait_begin(this, THD_WAIT_YIELD);
+    thd_wait_end(this);
+    last_yield_counter = yield_counter;
+  }
+}
+
 void THD::set_sent_row_count(ha_rows count) {
   m_sent_row_count = count;
   MYSQL_SET_STATEMENT_ROWS_SENT(m_statement_psi, m_sent_row_count);
@@ -2273,14 +2334,17 @@ void THD::inc_examined_row_count(ha_rows count) {
 
 void THD::inc_deleted_row_count(ha_rows count) {
   MYSQL_INC_STATEMENT_ROWS_DELETED(m_statement_psi, count);
+  m_trx_dml_row_count++;
 }
 
 void THD::inc_inserted_row_count(ha_rows count) {
   MYSQL_INC_STATEMENT_ROWS_INSERTED(m_statement_psi, count);
+  m_trx_dml_row_count++;
 }
 
 void THD::inc_updated_row_count(ha_rows count) {
   MYSQL_INC_STATEMENT_ROWS_UPDATED(m_statement_psi, count);
+  m_trx_dml_row_count++;
 }
 
 void THD::inc_status_created_tmp_disk_tables() {
@@ -3331,9 +3395,14 @@ void THD::serialize_client_attrs() {
 
   compute_md5_hash((char *)client_id.data(), client_attrs_string.ptr(),
                    client_attrs_string.length());
+
   int bytes_lost MY_ATTRIBUTE((unused)) = PSI_THREAD_CALL(
       set_thread_client_attrs)(client_id.data(), client_attrs_string.ptr(),
                                client_attrs_string.length());
+
+  memcpy(mt_key_val[THD::CLIENT_ID].data(), client_id.data(), MD5_HASH_SIZE);
+  mt_key_val_set[THD::CLIENT_ID] = true;
+
   DBUG_ASSERT(bytes_lost == 0);
 }
 
@@ -3371,21 +3440,18 @@ void THD::get_mt_keys_for_write_query(
   // Get keys for all the target dimensions to update write stats for
   // USER
   keys[0] = get_user_name();
+
   // CLIENT ID
-  // TODO(mzait) - Hardcoding it for now, to be replaced
-  // after sql_findings is ported to 8.0
-  keys[1] = "HARDCODED_CLIENT_ID";
+  char client_id[MD5_HASH_TO_STRING_LENGTH + 1];
+  mt_hex_value(THD::CLIENT_ID, client_id, MD5_HASH_TO_STRING_LENGTH + 1);
+  keys[1] = client_id;
+
   // SHARD
   keys[2] = get_db_name();
+
   // SQL ID
-  // TODO(mzait) Calculating a unique hash for now, to be
-  // replaced after the same hash used in sql_findings when ported to 8.0
-  char sql_id[DIGEST_HASH_TO_STRING_LENGTH + 1] = "";
-  if (m_digest && !m_digest->m_digest_storage.is_empty()) {
-    uchar digest_hash[DIGEST_HASH_SIZE];
-    compute_digest_hash(&m_digest->m_digest_storage, digest_hash);
-    DIGEST_HASH_TO_STRING(digest_hash, sql_id);
-  }
+  char sql_id[DIGEST_HASH_TO_STRING_LENGTH + 1];
+  mt_hex_value(THD::SQL_ID, sql_id, DIGEST_HASH_TO_STRING_LENGTH + 1);
   keys[3] = sql_id;
 }
 
@@ -3410,4 +3476,350 @@ enum_control_level THD::get_mt_throttle_tag_level() const {
     if (query_attr_value == "ERROR") return CONTROL_LEVEL_ERROR;
   }
   return CONTROL_LEVEL_OFF;
+}
+
+void THD::set_trx_dml_start_time() {
+  /* if the dml_start_time is already initialized then do nothing */
+  if (m_trx_dml_start_time_is_set) return;
+
+  /* if stmt_start_write_time is set, use that value */
+  if (m_stmt_start_write_time_is_set) {
+    m_trx_dml_start_time = m_stmt_start_write_time;
+    return;
+  }
+
+  int result = clock_gettime(CLOCK_THREAD_CPUTIME_ID, &m_trx_dml_start_time);
+
+  /* remember that we have initialized m_trx_dml_start_time */
+  m_trx_dml_start_time_is_set = (result == 0);
+}
+
+/*
+  Capture the total cpu time(ms) spent to write the rows for stmt
+ */
+ulonglong THD::get_trx_dml_write_time() {
+  timespec time_end;
+  ulonglong dml_write_time = 0;
+  if (m_trx_dml_start_time_is_set &&
+      (clock_gettime(CLOCK_THREAD_CPUTIME_ID, &time_end) == 0)) {
+    /* diff_timespec returns nanoseconds */
+    dml_write_time = diff_timespec(&time_end, &m_trx_dml_start_time);
+    dml_write_time /= 1000; /* convert to microseconds */
+  }
+  return dml_write_time;
+}
+
+/**
+  check if CPU execution time limit has exceeded
+
+  @return       true if the CPU execution time limit has exceeded and the
+                query needs to be errored out. Returns false otherwise.
+
+  Note: The function will register a warning as note if the variable
+        'write_control_level' is set to 'NOTE'. If the variable is set
+        to 'WARN' then a regular warning is raised.
+        The function will return TRUE if the CPU execution time limt
+        has exceeded only if the variable 'write_control_level' is set to ERROR
+        and if the variables 'write_cpu_limit_milliseconds' and
+        'write_time_check_batch' are set to non-zero values.
+*/
+bool THD::dml_execution_cpu_limit_exceeded() {
+  /* enforcing DML execution time limit is disabled if
+   * - write_control_level is set to 'OFF' or
+   * - write_cpu_limit_milliseconds is set to 0 or
+   * - write_time_check_batch is set to 0
+   */
+  if (write_control_level == CONTROL_LEVEL_OFF ||
+      write_cpu_limit_milliseconds == 0 || write_time_check_batch == 0) {
+    return false;
+  }
+
+  /* if the variable 'write_control_level' is set to 'NOTE' or 'WARN'
+   * then stop checking for CPU execution time limit any further
+   * because the warning needs to be raised only once per statement/transaction
+   */
+  if ((write_control_level == CONTROL_LEVEL_NOTE ||  /* NOTE */
+       write_control_level == CONTROL_LEVEL_WARN) && /* WARN */
+      m_trx_dml_cpu_time_limit_warning) {
+    return false;
+  }
+
+  ulonglong dml_rows_processed = get_trx_dml_row_count();
+
+  /* bail out if there are no rows processed for DML */
+  if (dml_rows_processed == 0) {
+    return false;
+  }
+
+  /* first row processed */
+  if (dml_rows_processed == 1) {
+    set_trx_dml_start_time();
+  } else if (dml_rows_processed % write_time_check_batch == 0) {
+    ulonglong dml_cpu_time = get_trx_dml_write_time();
+    DBUG_EXECUTE_IF("dbug.force_long_running_query",
+                    dml_cpu_time = write_cpu_limit_milliseconds;);
+
+    if (dml_cpu_time >= (ulonglong)write_cpu_limit_milliseconds) {
+      /* raise warning if 'write_control_level' is 'NOTE' or 'WARN' */
+      if (write_control_level == CONTROL_LEVEL_NOTE ||
+          write_control_level == CONTROL_LEVEL_WARN) {
+        /* raise warning */
+        push_warning(
+            this,
+            (write_control_level == CONTROL_LEVEL_NOTE)
+                ? Sql_condition::SL_NOTE
+                : Sql_condition::SL_WARNING,
+            ER_WARN_WRITE_EXCEEDED_CPU_LIMIT_MILLISECONDS,
+            ER_THD(this, ER_WARN_WRITE_EXCEEDED_CPU_LIMIT_MILLISECONDS));
+
+        /* remember that the warning has been raised so that further
+         * warnings will not be raised for the same statement/transaction
+         */
+        m_trx_dml_cpu_time_limit_warning = true;
+      } else if (write_control_level == CONTROL_LEVEL_ERROR) {
+        return true;
+      }
+    }
+  }
+
+  return false;
+}
+
+void THD::mt_hex_value(enum_mt_key key_name, char *hex_val, uint len) {
+  DBUG_ASSERT(key_name < MT_KEY_MAX);
+
+  if (mt_key_is_set(key_name)) {
+    if (key_name == SQL_ID) {
+      DBUG_ASSERT(len == DIGEST_HASH_TO_STRING_LENGTH + 1);
+      DIGEST_HASH_TO_STRING(mt_key_value(key_name), hex_val);
+      hex_val[len-1] = '\0';
+    } else {
+      DBUG_ASSERT(len == MD5_HASH_TO_STRING_LENGTH + 1);
+      array_to_hex(hex_val, mt_key_value(key_name).data(), MD5_HASH_SIZE);
+      hex_val[len-1] = '\0';
+    }
+  } else {
+    hex_val[0] = '\0';
+  }
+}
+
+/**
+  Helper function to adjust global usage/peak counters by accumulated delta.
+
+  @param unreported_delta   pending delta for global usage update
+  @param g_value            global usage value
+  @param g_peak             global usage peak
+  @param g_period_peak      global usage peak for some period
+*/
+static void adjust_global_by(std::atomic<longlong> *unreported_delta,
+                             std::atomic<ulonglong> *g_value,
+                             std::atomic<ulonglong> *g_peak,
+                             std::atomic<ulonglong> *g_period_peak) {
+  /* Counters could be disabled at runtime, re-enable requires restart. */
+  if (max_tmp_disk_usage == TMP_DISK_USAGE_DISABLED) return;
+
+  /*
+    This is where threads on the secondary could race to find which
+    one is doing global update. Only one will grab the whole unreported
+    amount.
+  */
+  longlong delta = unreported_delta->exchange(0);
+
+  /*
+    It's possible that delta now is less than the increment but it would
+    be very rare so just do the update regardless.
+  */
+  if (delta != 0) {
+    ulonglong old_value = g_value->fetch_add(delta);
+    ulonglong new_value = old_value + delta;
+
+    /* Check for over and underflow. */
+    DBUG_ASSERT(delta >= 0 ? new_value >= old_value : new_value < old_value);
+
+    /* Now update peaks. */
+    update_peak(g_peak, new_value);
+    update_peak(g_period_peak, new_value);
+  }
+}
+
+/**
+  Helper function to adjust local session and global usage/peak counters
+  by specified delta. The global updates are batched to avoid frequent
+  updates.
+
+  @param value              session usage value
+  @param peak               session usage peak
+  @param delta              signed usage delta in bytes
+  @param unreported_delta   pending delta for global usage update
+  @param g_value            global usage value
+  @param g_peak             global usage peak
+  @param g_period_peak      global usage peak for some period
+  @param skip_session       do not update session counters
+*/
+static void adjust_by(ulonglong *value, std::atomic<ulonglong> *peak,
+                      longlong delta, std::atomic<longlong> *unreported_delta,
+                      std::atomic<ulonglong> *g_value,
+                      std::atomic<ulonglong> *g_peak,
+                      std::atomic<ulonglong> *g_period_peak,
+                      bool skip_session) {
+  if (!skip_session) {
+    ulonglong old_value = *value;
+    ulonglong new_value = old_value + delta;
+    *value = new_value;
+
+    /* Check for over and underflow. */
+    DBUG_ASSERT(delta >= 0 ? new_value >= old_value : new_value < old_value);
+
+    /* Local peak is maintained as atomic because REFRESH_STATUS resets
+       peak from another thead. */
+    update_peak(peak, new_value);
+  }
+
+  /* Avoid frequent updates of global usage. */
+  constexpr ulonglong DISK_USAGE_REPORTING_INCREMENT = 8192;
+  longlong new_delta = unreported_delta->fetch_add(delta) + delta;
+  ulonglong abs_delta = new_delta >= 0 ? new_delta : -new_delta;
+
+  if (abs_delta >= DISK_USAGE_REPORTING_INCREMENT) {
+    adjust_global_by(unreported_delta, g_value, g_peak, g_period_peak);
+  }
+}
+
+/**
+  Adjust filesort disk usage for current session.
+
+  @param delta    signed delta value in bytes
+*/
+void THD::adjust_filesort_disk_usage(longlong delta) {
+  /* No need to track filesort usage per replication thread. */
+  bool skip_session = slave_thread;
+  adjust_by(&m_filesort_disk_usage, &m_filesort_disk_usage_peak, delta,
+            &m_unreported_global_filesort_delta, &filesort_disk_usage,
+            &filesort_disk_usage_peak, &filesort_disk_usage_period_peak,
+            skip_session);
+
+#ifdef HAVE_PSI_STATEMENT_INTERFACE
+  ulonglong stmt_usage =
+      m_filesort_disk_usage - m_stmt_filesort_disk_usage_offset;
+  PSI_STATEMENT_CALL(update_statement_filesort_disk_usage)
+  (m_statement_psi, stmt_usage);
+#endif
+}
+
+/**
+  Adjust tmp table disk usage for current session.
+
+  @param delta    signed delta value in bytes
+*/
+void THD::adjust_tmp_table_disk_usage(longlong delta) {
+  /* Replication threads are combined in one tablespace so tracking per
+     session is not feasible, and there's no need for it. */
+  bool skip_session = slave_thread;
+  adjust_by(&m_tmp_table_disk_usage, &m_tmp_table_disk_usage_peak, delta,
+            &m_unreported_global_tmp_table_delta, &tmp_table_disk_usage,
+            &tmp_table_disk_usage_peak, &tmp_table_disk_usage_period_peak,
+            skip_session);
+
+#ifdef HAVE_PSI_STATEMENT_INTERFACE
+  ulonglong stmt_usage =
+      m_tmp_table_disk_usage - m_stmt_tmp_table_disk_usage_offset;
+  PSI_STATEMENT_CALL(update_statement_tmp_table_disk_usage)
+  (m_statement_psi, stmt_usage);
+#endif
+}
+
+/**
+  Propagate pending global disk usage at the end of session.
+*/
+void THD::propagate_pending_global_disk_usage() {
+  adjust_global_by(&m_unreported_global_filesort_delta, &filesort_disk_usage,
+                   &filesort_disk_usage_peak, &filesort_disk_usage_period_peak);
+  adjust_global_by(&m_unreported_global_tmp_table_delta, &tmp_table_disk_usage,
+                   &tmp_table_disk_usage_peak,
+                   &tmp_table_disk_usage_period_peak);
+}
+
+/**
+  Reset session status vars on REFRESH_STATUS.
+*/
+void THD::reset_status_vars() {
+  reset_system_status_vars(&status_var);
+
+  /* Handle special session status vars here. */
+  reset_peak(&m_filesort_disk_usage_peak, m_filesort_disk_usage);
+  reset_peak(&m_tmp_table_disk_usage_peak, m_tmp_table_disk_usage);
+}
+
+/*
+  Get the OS thread id associated with this THD.
+ */
+my_thread_os_id_t THD::get_thread_os_id() const {
+  my_thread_os_id_t id = 0;
+#ifdef HAVE_PSI_THREAD_INTERFACE
+  id = PSI_THREAD_CALL(get_thread_os_id)(get_psi());
+#endif
+  return id;
+}
+
+/*
+  Get the priority of the underlying OS thread.
+ */
+int THD::get_thread_priority() const {
+  int pri = 0;
+#ifdef HAVE_PSI_THREAD_INTERFACE
+  pri = PSI_THREAD_CALL(get_thread_priority)(get_psi());
+#endif
+  return pri;
+}
+
+/*
+  Set the priority of the underlying OS thread.
+
+  @param pri    The priority to set the thread to.
+  @return       true on success, false otherwise.
+*/
+bool THD::set_thread_priority(int pri) {
+  DBUG_ENTER("THD::set_thread_priority");
+
+  bool ret = true;
+
+  my_thread_os_id_t thread_os_id = get_thread_os_id();
+  if (thread_os_id && get_thread_priority() != pri) {
+    ret = set_system_thread_priority(thread_os_id, pri);
+#ifdef HAVE_PSI_THREAD_INTERFACE
+    if (ret) {
+      PSI_THREAD_CALL(set_thread_priority)(get_psi(), pri);
+    }
+#endif
+  }
+
+  DBUG_RETURN(ret);
+}
+
+/*
+  Returns the (integer) value of the specified attribute from the
+  query attribute map or connection attribute map, in this order.
+  In case the attribute is not found or its value exceeds the max
+  value passed in then return the specified default value
+ */
+ulong THD::get_query_or_connect_attr_value(const char *attr_name,
+                                           ulong default_value,
+                                           ulong max_value) {
+  ulong attr_value = 0;
+  for (const auto &it : query_attrs_list) {
+    if (it.first == attr_name) {
+      if (!stoul_noexcept(it.second.c_str(), &attr_value) &&
+          attr_value < max_value)
+        return attr_value;
+    }
+  }
+
+  auto it = connection_attrs_map.find(attr_name);
+  if (it != connection_attrs_map.end()) {
+    if (!stoul_noexcept(it->second.c_str(), &attr_value) &&
+        attr_value < max_value)
+      return attr_value;
+  }
+
+  return default_value;
 }

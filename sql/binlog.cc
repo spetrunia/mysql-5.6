@@ -2099,7 +2099,11 @@ int binlog_cache_data::flush(THD *thd, my_off_t *bytes_written,
     if (!error && enable_raft_plugin && !mysql_bin_log.is_apply_log) {
       std::unique_ptr<Binlog_cache_storage> temp_binlog_cache =
           std::make_unique<Binlog_cache_storage>();
-      temp_binlog_cache->open(4096, 4096);
+
+      temp_binlog_cache->open(
+          flags.transactional ? binlog_cache_size : binlog_stmt_cache_size,
+          flags.transactional ? max_binlog_cache_size
+                              : max_binlog_stmt_cache_size);
 
       if ((error = mysql_bin_log.write_gtid(thd, this, &writer,
                                             temp_binlog_cache.get())))
@@ -3731,7 +3735,7 @@ bool purge_raft_logs(THD *thd, const char *to_log) {
 
   // Lock requirement and ordering based on SQL appliers next_event loop
   mysql_mutex_lock(&rli->data_lock);
-
+  rli->relay_log.lock_index();
   char search_file_name[FN_REFLEN];
   mysql_bin_log.make_log_name(search_file_name, to_log);
 
@@ -3745,14 +3749,17 @@ bool purge_raft_logs(THD *thd, const char *to_log) {
   bool error = purge_error_message(
       thd, rli->relay_log.purge_logs(search_file_name,
                                      /*included=*/false,
-                                     /*need_lock_index=*/true,
+                                     /*need_lock_index=*/false,
                                      /*need_update_threads=*/true,
                                      /*decrease_log_space=*/nullptr,
                                      /*auto_purge=*/false,
                                      rli->get_group_relay_log_name()));
 
-  // TODO(pgl) - Add code to fix relay log index file.
+  if (!error) {
+    error = update_relay_log_cordinates(rli);
+  }
 
+  rli->relay_log.unlock_index();
   mysql_mutex_unlock(&rli->data_lock);
   unlock_master_info(active_mi);
 
@@ -3789,6 +3796,7 @@ bool purge_raft_logs_before_date(THD *thd, time_t purge_time) {
 
   // Lock requirement and ordering based SQL appliers next_event loop
   mysql_mutex_lock(&rli->data_lock);
+  rli->relay_log.lock_index();
 
   // Note that we pass max_log as group_relay_log_name. This is because we
   // should not purge anything that is still needed by sql appliers.
@@ -3802,12 +3810,39 @@ bool purge_raft_logs_before_date(THD *thd, time_t purge_time) {
                purge_time,
                /*auto_purge=*/false,
                /*stop_purge=*/false,
-               /*need_lock_index=*/true, rli->get_group_relay_log_name()));
+               /*need_lock_index=*/false, rli->get_group_relay_log_name()));
 
-  // TODO(pgl) - Add code to fix relay log index file.
-
+  if (!error) {
+    error = update_relay_log_cordinates(rli);
+  }
+  rli->relay_log.unlock_index();
   mysql_mutex_unlock(&rli->data_lock);
   unlock_master_info(active_mi);
+  return error;
+}
+
+/**
+  Updates the index file cordinates in relay log info. All required locks need
+  to be acquired by the caller
+
+  @param rli Relay log info that needs to be updated
+
+  @retval FALSE success
+  @retval TRUE failure
+*/
+bool update_relay_log_cordinates(Relay_log_info *rli) {
+  auto applier_reader = global_applier_reader.lock();
+  if (!applier_reader) return false;
+  int error = applier_reader->update_relay_log_coordinates(rli);
+
+  if (error) {
+    if (binlog_error_action == ABORT_SERVER ||
+        binlog_error_action == ROLLBACK_TRX) {
+      exec_binlog_error_action_abort(
+          "Could not update relay log position "
+          "for applier threads. Aborting server");
+    }
+  }
   return error;
 }
 
@@ -4311,6 +4346,8 @@ void MYSQL_BIN_LOG::cleanup() {
     mysql_cond_destroy(&m_prep_xids_cond);
     mysql_cond_destroy(&non_xid_trxs_cond);
     stage_manager.deinit();
+    // Clear the HLC map, forcing mutexes and condvars to be cleaned up
+    hlc.clear_database_hlc();
   }
 
   delete m_binlog_file;
@@ -8313,7 +8350,13 @@ int MYSQL_BIN_LOG::new_file_impl(
     // pattern in most places of after_commit hook (TODO)
     (void)RUN_HOOK(raft_replication, after_commit, (current_thd));
   }
-
+  if (!error && enable_raft_plugin && (is_relay_log || rotate_via_raft)) {
+    // Register new log to raft
+    // Previous close(LOG_CLOSE_TO_BE_OPENED | LOG_CLOSE_INDEX,) will close
+    // binlog and its IO_CACHE.
+    register_log_entities(current_thd, /*context=*/0,
+                          /*need_lock=*/false, is_relay_log);
+  }
 end:
   if (error && close_on_error /* rotate, flush or reopen failed */) {
     /*
@@ -10862,9 +10905,6 @@ int MYSQL_BIN_LOG::register_log_entities(THD *thd, int context, bool need_lock,
   else
     mysql_mutex_assert_owner(&LOCK_log);
 
-  // TODO(luqun): assign correct values
-  ulong signal_cnt = 0;
-
   Raft_replication_observer::st_setup_flush_arg arg;
   arg.log_file_cache = m_binlog_file->get_io_cache();
   arg.log_prefix = name;
@@ -10954,7 +10994,6 @@ static int register_entities_with_raft() {
   // Plugin will make that the default file to write to
   err = active_mi->rli->relay_log.register_log_entities(
       thd, /*context=*/0, /*need_lock=*/true, /*is_relay_log=*/true);
-
   unlock_master_info(active_mi);
   if (err) {
     // NO_LINT_DEBUG
@@ -11443,23 +11482,17 @@ int binlog_change_to_apply() {
 
   mysql_bin_log.is_apply_log = true;
 
-  /*
-   * TODO: 5.6 myraft sets previous gtid set here using
-   * mysql_bin_log.set_previous_gtid_set(gtid_state->get_logged_gtids).
-   * However, this is not available in 8.0. open_binlog() determines the
-   * previous_gtid_set that needs to be written into the new file. Hence the
-   * change is dropped in 8.0.
-   */
+  // set prevoius gtid set for relay log
+  mysql_bin_log.set_previous_gtid_set_relaylog(
+      const_cast<Gtid_set *>(gtid_state->get_executed_gtids()));
 
   // HLC is TBD
-  if (mysql_bin_log.open_binlog(
-        opt_apply_logname,
-        /*new_name=*/NULL,
-        max_binlog_size,
-        /*null_created_arg=*/false,
-        /*need_lock_index=*/false,
-        /*need_sid_lock=*/true,
-        /*extra_description_event=*/NULL)) {
+  if (mysql_bin_log.open_binlog(opt_apply_logname,
+                                /*new_name=*/NULL, max_binlog_size,
+                                /*null_created_arg=*/false,
+                                /*need_lock_index=*/false,
+                                /*need_sid_lock=*/true,
+                                /*extra_description_event=*/NULL)) {
     error = 1;
     goto err;
   }
@@ -11490,7 +11523,7 @@ err:
   DBUG_RETURN(error);
 }
 
-int binlog_change_to_binlog() {
+int binlog_change_to_binlog(THD *thd) {
   DBUG_ENTER("binlog_change_to_binlog");
 
   // disable_raft_log_repointing for MTR integration tests
@@ -11599,6 +11632,11 @@ int binlog_change_to_binlog() {
   mysql_bin_log.is_apply_log = false;
   mysql_bin_log.apply_file_count.store(0);
 
+  // Register new log to raft
+  // Previous mysql_bin_log.close(LOG_CLOSE_INDEX) will also close binlog and
+  // its IO_CACHE.
+  mysql_bin_log.register_log_entities(thd, /*context=*/0, /*need_lock=*/false,
+                                      /*is_relay_log=*/false);
 err:
   mysql_bin_log.unlock_index();
   mysql_mutex_unlock(mysql_bin_log.get_log_lock());

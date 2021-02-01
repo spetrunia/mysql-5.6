@@ -398,7 +398,7 @@ class ha_rocksdb : public my_core::handler {
   bool has_hidden_pk(const TABLE *const table) const
       MY_ATTRIBUTE((__nonnull__, __warn_unused_result__));
 
-  void update_row_stats(const operation_type &type);
+  void update_row_stats(const operation_type &type, ulonglong count = 1);
 
   void set_last_rowkey(const uchar *const old_data);
 
@@ -696,9 +696,6 @@ class ha_rocksdb : public my_core::handler {
   // true <=> The scan uses the default MRR implementation, just redirect all
   // calls to it
   bool mrr_uses_default_impl;
-
-  bool mrr_sorted_mode;  // true <=> we are in ordered-keys, ordered-results
-                         // mode.
 
   // RANGE_SEQ_IF is stored in handler::mrr_funcs
   HANDLER_BUFFER mrr_buf;
@@ -1038,6 +1035,8 @@ class ha_rocksdb : public my_core::handler {
   bool is_read_free_rpl_table() const;
   int adjust_handler_stats_sst_and_memtable();
   int adjust_handler_stats_table_scan();
+
+  void update_row_read(ulonglong count);
 
  public:
   virtual void rpl_before_delete_rows() override;

@@ -53,6 +53,7 @@
 /* For show status */
 #include "storage/perfschema/pfs_column_values.h"
 #include "storage/perfschema/table_accounts.h"
+#include "storage/perfschema/table_column_statistics.h"
 #include "storage/perfschema/table_data_lock_waits.h"
 #include "storage/perfschema/table_data_locks.h"
 #include "storage/perfschema/table_ees_by_account_by_error.h"
@@ -135,6 +136,7 @@
 #include "storage/perfschema/table_socket_instances.h"
 #include "storage/perfschema/table_socket_summary_by_event_name.h"
 #include "storage/perfschema/table_socket_summary_by_instance.h"
+#include "storage/perfschema/table_sql_findings.h"
 #include "storage/perfschema/table_statistics_by_table.h"
 #include "storage/perfschema/table_status_by_account.h"
 #include "storage/perfschema/table_status_by_host.h"
@@ -561,6 +563,7 @@ bool PFS_table_context::is_item_set(ulong n) {
 }
 
 static PFS_engine_table_share *all_shares[] = {
+    &table_column_statistics::m_share,
     &table_cond_instances::m_share,
     &table_events_waits_current::m_share,
     &table_events_waits_history::m_share,
@@ -644,6 +647,7 @@ static PFS_engine_table_share *all_shares[] = {
     &table_write_statistics::m_share,
     &table_write_throttling_rules::m_share,
     &table_write_throttling_log::m_share,
+    &table_sql_findings::m_share,
 
     &table_keyring_keys::s_share,
 

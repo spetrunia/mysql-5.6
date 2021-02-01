@@ -63,10 +63,12 @@
 #include "mysql_com.h"  // SERVER_VERSION_LENGTH
 #ifdef _WIN32
 #include "sql/nt_servc.h"
-#endif                    // _WIN32
+#endif  // _WIN32
+#include "sql/rpl_lag_manager.h"
 #include "sql/set_var.h"  // enum_var_type
 #include "sql/sql_bitmap.h"
 #include "sql/sql_const.h"  // UUID_LENGTH
+#include "sql/sql_info.h"
 #include "sql/system_variables.h"
 #include "sql/thr_malloc.h"
 
@@ -167,7 +169,7 @@ extern bool opt_log_slave_updates;
 extern bool opt_log_unsafe_statements;
 extern bool opt_log_global_var_changes;
 extern bool opt_general_log, opt_slow_log, opt_general_log_raw;
-extern char* opt_gap_lock_logname;
+extern char *opt_gap_lock_logname;
 extern ulonglong log_output_options;
 extern bool opt_log_queries_not_using_indexes;
 extern ulong opt_log_throttle_queries_not_using_indexes;
@@ -336,6 +338,7 @@ extern ulong table_def_size;
 extern ulong tablespace_def_size;
 extern MYSQL_PLUGIN_IMPORT ulong max_connections;
 extern ulong opt_max_running_queries, opt_max_waiting_queries;
+extern ulong opt_max_db_connections;
 extern ulong max_digest_length;
 extern ulong max_connect_errors, connect_timeout;
 extern ulong max_nonsuper_connections;
@@ -434,7 +437,6 @@ extern char *opt_applylog_index_name;
 /* What should the server do when trxs fail inside ordered commit */
 extern ulong opt_commit_consensus_error_action;
 
-
 /* Enable query checksum validation for queries with a checksum sent */
 extern bool enable_query_checksum;
 
@@ -495,6 +497,18 @@ inline ulonglong microseconds_to_my_timer(double when) {
 }
 
 extern ulong write_control_level;
+
+/* Global variable to denote the maximum CPU time (specified in milliseconds)
+ * limit for DML queries.
+ */
+extern uint write_cpu_limit_milliseconds;
+
+/* Global variable to denote the frequency (specified in number of rows) of
+ * checking whether DML queries exceeded the CPU time limit enforced by
+ * 'write_time_check_batch'
+ */
+extern uint write_time_check_batch;
+
 extern bool is_slave;
 extern std::atomic<int> slave_stats_daemon_thread_counter;
 extern uint write_stats_count;
@@ -506,6 +520,17 @@ extern double write_throttle_min_ratio;
 extern uint write_throttle_monitor_cycles;
 extern uint write_throttle_lag_pct_min_secondaries;
 extern ulong write_auto_throttle_frequency;
+/* Controls collecting MySQL findings (aka SQL conditions) */
+extern ulong sql_findings_control;
+
+/* Controls whether MySQL send an error when running duplicate statements */
+extern uint sql_maximum_duplicate_executions;
+/* Controls the mode of enforcement of duplicate executions of the same stmt */
+extern ulong sql_duplicate_executions_control;
+
+/* Global variable to control collecting column statistics */
+extern ulong column_stats_control;
+
 extern bool read_only_slave;
 extern bool flush_only_old_table_cache_entries;
 extern ulong stored_program_cache_size;
@@ -553,6 +578,31 @@ extern std::atomic<ulong> acl_fast_lookup_miss;
 extern bool acl_fast_lookup_enabled;
 extern char *opt_log_error_suppression_list;
 extern char *opt_log_error_services;
+extern char *thread_priority_str;
+
+/* Global tmp disk usage max and check. */
+extern ulonglong max_tmp_disk_usage;
+const ulonglong TMP_DISK_USAGE_DISABLED = -1;
+bool is_tmp_disk_usage_over_max();
+
+/* Filesort current usage and peak since startup. */
+extern std::atomic<ulonglong> filesort_disk_usage;
+extern std::atomic<ulonglong> filesort_disk_usage_peak;
+
+/* Peak for filesort usage atomically reset by show status. */
+extern std::atomic<ulonglong> filesort_disk_usage_period_peak;
+
+/* Tmp table current usage and peak since startup. */
+extern std::atomic<ulonglong> tmp_table_disk_usage;
+extern std::atomic<ulonglong> tmp_table_disk_usage_peak;
+
+/* Peak for tmp table usage atomically reset by show status. */
+extern std::atomic<ulonglong> tmp_table_disk_usage_period_peak;
+
+/* Common peak stats operations. */
+void update_peak(std::atomic<ulonglong> *peak, ulonglong new_value);
+ulonglong reset_peak(std::atomic<ulonglong> *peak,
+                     const std::atomic<ulonglong> &value);
 
 /** The size of the host_cache. */
 extern uint host_cache_size;
@@ -642,10 +692,16 @@ extern PSI_mutex_key key_LOCK_global_write_statistics;
 extern PSI_mutex_key key_LOCK_global_write_throttling_rules;
 extern PSI_mutex_key key_LOCK_global_write_throttling_log;
 extern PSI_mutex_key key_LOCK_replication_lag_auto_throttling;
+extern PSI_mutex_key key_LOCK_global_sql_findings;
+extern PSI_mutex_key key_LOCK_global_active_sql;
 
 extern PSI_mutex_key key_commit_order_manager_mutex;
 extern PSI_mutex_key key_mutex_slave_worker_hash;
 
+extern PSI_mutex_key key_LOCK_ac_node;
+extern PSI_mutex_key key_LOCK_ac_info;
+
+extern PSI_rwlock_key key_rwlock_LOCK_column_statistics;
 extern PSI_rwlock_key key_rwlock_LOCK_logger;
 extern PSI_rwlock_key key_rwlock_channel_map_lock;
 extern PSI_rwlock_key key_rwlock_channel_lock;
@@ -654,6 +710,7 @@ extern PSI_rwlock_key key_rwlock_rpl_filter_lock;
 extern PSI_rwlock_key key_rwlock_channel_to_filter_lock;
 extern PSI_rwlock_key key_rwlock_LOCK_gap_lock_exceptions;
 extern PSI_rwlock_key key_rwlock_resource_group_mgr_map_lock;
+extern PSI_rwlock_key key_rwlock_LOCK_ac;
 
 extern PSI_cond_key key_PAGE_cond;
 extern PSI_cond_key key_COND_active;
@@ -683,6 +740,7 @@ extern PSI_cond_key key_hlc_wait_cond;
 extern PSI_cond_key key_COND_thr_lock;
 extern PSI_cond_key key_cond_slave_worker_hash;
 extern PSI_cond_key key_commit_order_manager_cond;
+extern PSI_cond_key key_COND_ac_node;
 extern PSI_thread_key key_thread_bootstrap;
 extern PSI_thread_key key_thread_handle_manager;
 extern PSI_thread_key key_thread_handle_slave_stats_daemon;
@@ -881,6 +939,8 @@ extern mysql_mutex_t LOCK_global_write_statistics;
 extern mysql_mutex_t LOCK_global_write_throttling_rules;
 extern mysql_mutex_t LOCK_global_write_throttling_log;
 extern mysql_mutex_t LOCK_replication_lag_auto_throttling;
+extern mysql_mutex_t LOCK_global_sql_findings;
+extern mysql_mutex_t LOCK_global_active_sql;
 extern mysql_mutex_t LOCK_global_system_variables;
 extern mysql_mutex_t LOCK_user_conn;
 extern mysql_mutex_t LOCK_log_throttle_qni;
@@ -907,6 +967,7 @@ extern mysql_cond_t COND_compress_gtid_table;
 extern mysql_cond_t COND_manager;
 extern mysql_cond_t COND_slave_stats_daemon;
 
+extern mysql_rwlock_t LOCK_column_statistics;
 extern mysql_rwlock_t LOCK_sys_init_connect;
 extern mysql_rwlock_t LOCK_sys_init_slave;
 extern mysql_rwlock_t LOCK_system_variables_hash;
@@ -972,6 +1033,23 @@ inline void set_mysqld_offline_mode(bool value) { offline_mode.store(value); }
  */
 inline bool write_stats_capture_enabled() {
   return write_stats_count > 0 && write_stats_frequency > 0;
+}
+
+/* sql_id_is_needed
+     Returns TRUE if SQL_ID is needed:
+     - SQL Findings
+     - write statistics
+     - write throttling
+     - column statistics
+ */
+inline bool sql_id_is_needed() {
+  bool needed = (sql_findings_control == SQL_INFO_CONTROL_ON ||
+                         column_stats_control == SQL_INFO_CONTROL_ON ||
+                         write_stats_capture_enabled() ||
+                         write_control_level != CONTROL_LEVEL_OFF
+                     ? true
+                     : false);
+  return needed;
 }
 
 /**
@@ -1128,5 +1206,29 @@ ulong get_mts_parallel_option();
    Returns whether slave commit order is preserved
 */
 bool get_slave_preserve_commit_order();
+
+/**
+ * Set the priority of an OS thread.
+ *
+ * @param thread_priority_str  A string of the format os_thread_id:nice_val.
+ * @return                     true on success, false otherwise.
+ */
+bool set_thread_priority(char *thread_priority_str);
+
+/**
+ * Set priority of the current thread.
+ *
+ * @return true on success, false otherwise.
+ */
+bool set_current_thread_priority();
+
+/**
+ * Set the priority of an OS thread.
+ *
+ * @param tid  The OS thread id.
+ * @param pri  The priority to set the thread to.
+ * @return     true on success, false otherwise.
+ */
+bool set_system_thread_priority(pid_t tid, int pri);
 
 #endif /* MYSQLD_INCLUDED */

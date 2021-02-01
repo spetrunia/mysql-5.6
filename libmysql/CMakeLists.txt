@@ -187,6 +187,7 @@ mysql_fetch_row_nonblocking
 mysql_free_result_nonblocking
 mysql_get_socket_descriptor
 mysql_get_connect_stage
+mysql_reset_connection_nonblocking
 CACHE INTERNAL "Nonblocking functions exported by client API"
 )
 
@@ -239,7 +240,7 @@ ELSE()
   LIST(APPEND LIBS_TO_LINK ${ZLIB_LIBRARY})
 ENDIF()
 
-IF(WITH_ZLIB STREQUAL "bundled")
+IF(WITH_ZSTD STREQUAL "bundled")
   LIST(APPEND LIBS_TO_MERGE ${ZSTD_LIBRARY})
 ELSE()
   LIST(APPEND LIBS_TO_LINK ${ZSTD_LIBRARY})

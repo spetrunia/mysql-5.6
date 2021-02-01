@@ -12940,12 +12940,14 @@ show_param:
 
             if ($1 == OPT_SESSION)
             {
+              lex->option_type = OPT_SESSION;
               if (build_show_session_status(
                     @$, thd, lex->wild, $3.where) == nullptr)
                 MYSQL_YYABORT;
             }
             else
             {
+              lex->option_type = OPT_GLOBAL;
               if (build_show_global_status(
                     @$, thd, lex->wild, $3.where) == nullptr)
                 MYSQL_YYABORT;
@@ -13490,7 +13492,7 @@ purge_option:
 /* kill threads */
 
 kill:
-          KILL_SYM ignore_option kill_option expr
+          KILL_SYM ignore_option kill_option expr opt_reason
           {
             ITEMIZE($4, &$4);
 
@@ -13511,6 +13513,9 @@ kill_option:
         | CONNECTION_SYM { Lex->type= 0; }
         | QUERY_SYM      { Lex->type= ONLY_KILL_QUERY; }
         ;
+opt_reason:
+          /* empty */ { Lex->kill_reason = NULL_STR; }
+        | TEXT_STRING { Lex->kill_reason = $1; }
 
 /* change database */
 
