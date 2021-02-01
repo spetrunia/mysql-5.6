@@ -57,6 +57,8 @@ show engine rocksdb transaction status;
 connection con3;
 set rocksdb_deadlock_detect_depth = 2;
 
+--echo # Range locking code will report deadlocks, because it doesn't honor
+--echo # rocksdb_deadlock_detect_depth:
 echo Deadlock #4;
 connection con1;
 begin;

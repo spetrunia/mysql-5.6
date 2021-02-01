@@ -274,6 +274,8 @@ END OF ROCKSDB TRANSACTION MONITOR OUTPUT
 =========================================
 
 set rocksdb_deadlock_detect_depth = 2;
+# Range locking code will report deadlocks, because it doesn't honor
+# rocksdb_deadlock_detect_depth:
 Deadlock #4
 begin;
 select * from t where i=1 for update;
@@ -314,6 +316,34 @@ SNAPSHOTS
 ---------
 LIST OF SNAPSHOTS FOR EACH SESSION:
 ----------LATEST DETECTED DEADLOCKS----------
+
+*** DEADLOCK PATH
+=========================================
+TSTAMP
+TXN_ID
+COLUMN FAMILY NAME: default
+KEY
+LOCK TYPE: EXCLUSIVE
+INDEX NAME: PRIMARY
+TABLE NAME: test.t
+---------------WAITING FOR---------------
+TSTAMP
+TXN_ID
+COLUMN FAMILY NAME: default
+KEY
+LOCK TYPE: EXCLUSIVE
+INDEX NAME: PRIMARY
+TABLE NAME: test.t
+---------------WAITING FOR---------------
+TSTAMP
+TXN_ID
+COLUMN FAMILY NAME: default
+KEY
+LOCK TYPE: EXCLUSIVE
+INDEX NAME: PRIMARY
+TABLE NAME: test.t
+
+--------TXN_ID GOT DEADLOCK---------
 -----------------------------------------
 END OF ROCKSDB TRANSACTION MONITOR OUTPUT
 =========================================
@@ -351,6 +381,54 @@ SNAPSHOTS
 ---------
 LIST OF SNAPSHOTS FOR EACH SESSION:
 ----------LATEST DETECTED DEADLOCKS----------
+
+*** DEADLOCK PATH
+=========================================
+TSTAMP
+TXN_ID
+COLUMN FAMILY NAME: default
+KEY
+LOCK TYPE: EXCLUSIVE
+INDEX NAME: NOT FOUND; IDX_ID
+TABLE NAME: NOT FOUND; IDX_ID
+---------------WAITING FOR---------------
+TSTAMP
+TXN_ID
+COLUMN FAMILY NAME: default
+KEY
+LOCK TYPE: EXCLUSIVE
+INDEX NAME: NOT FOUND; IDX_ID
+TABLE NAME: NOT FOUND; IDX_ID
+
+--------TXN_ID GOT DEADLOCK---------
+
+*** DEADLOCK PATH
+=========================================
+TSTAMP
+TXN_ID
+COLUMN FAMILY NAME: default
+KEY
+LOCK TYPE: EXCLUSIVE
+INDEX NAME: NOT FOUND; IDX_ID
+TABLE NAME: NOT FOUND; IDX_ID
+---------------WAITING FOR---------------
+TSTAMP
+TXN_ID
+COLUMN FAMILY NAME: default
+KEY
+LOCK TYPE: EXCLUSIVE
+INDEX NAME: NOT FOUND; IDX_ID
+TABLE NAME: NOT FOUND; IDX_ID
+---------------WAITING FOR---------------
+TSTAMP
+TXN_ID
+COLUMN FAMILY NAME: default
+KEY
+LOCK TYPE: EXCLUSIVE
+INDEX NAME: NOT FOUND; IDX_ID
+TABLE NAME: NOT FOUND; IDX_ID
+
+--------TXN_ID GOT DEADLOCK---------
 -----------------------------------------
 END OF ROCKSDB TRANSACTION MONITOR OUTPUT
 =========================================
