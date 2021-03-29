@@ -9877,7 +9877,6 @@ int ha_rocksdb::records_from_index(ha_rows *num_rows, uint index) {
 int ha_rocksdb::index_next(uchar *const buf) {
   DBUG_ENTER_FUNC();
   check_build_decoder();
-
   ha_statistic_increment(&System_status_var::ha_read_next_count);
   DBUG_RETURN(index_next_intern(buf));
 }
@@ -9890,7 +9889,6 @@ int ha_rocksdb::index_next(uchar *const buf) {
 int ha_rocksdb::index_prev(uchar *const buf) {
   DBUG_ENTER_FUNC();
   check_build_decoder();
-
   ha_statistic_increment(&System_status_var::ha_read_prev_count);
   DBUG_RETURN(index_prev_intern(buf));
 }
@@ -11268,8 +11266,8 @@ int ha_rocksdb::rnd_init(bool) {
 
   m_need_build_decoder = true;
   active_index = table->s->primary_key;
-
   m_rnd_scan_started = false;
+
   DBUG_RETURN(
       index_init(has_hidden_pk(table) ? MAX_KEY : pk_index(table, m_tbl_def),
                  false /* sorted */));
@@ -11427,11 +11425,9 @@ int ha_rocksdb::rnd_next_with_direction(uchar *const buf, bool move_forward) {
 
 int ha_rocksdb::rnd_end() {
   DBUG_ENTER_FUNC();
-  DBUG_RETURN(index_end());
   m_need_build_decoder = false;
-
+  DBUG_RETURN(index_end());
 }
-
 void ha_rocksdb::build_decoder() {
   m_converter->setup_field_decoders(table->read_set, active_index,
                                     m_keyread_only,
