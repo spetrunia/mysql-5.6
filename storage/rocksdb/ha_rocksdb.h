@@ -279,7 +279,6 @@ class ha_rocksdb : public my_core::handler {
 
   /* We only iterate but don't need to decode anything */
   bool m_iteration_only;
-
   bool m_rnd_scan_started;
 
   /*
