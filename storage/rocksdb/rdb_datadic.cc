@@ -362,6 +362,8 @@ Rdb_key_def::Rdb_key_def(const Rdb_key_def &k, const INDEX_ID &index_id)
       m_key_parts(k.m_key_parts),
       m_ttl_pk_key_part_offset(k.m_ttl_pk_key_part_offset),
       m_ttl_field_index(k.m_ttl_field_index),
+      m_partial_index_keyparts(k.m_partial_index_keyparts),
+      m_partial_index_threshold(k.m_partial_index_threshold),
       m_prefix_extractor(k.m_prefix_extractor),
       m_maxlength(k.m_maxlength),
       m_store_covered_bitmap(k.m_store_covered_bitmap) {
