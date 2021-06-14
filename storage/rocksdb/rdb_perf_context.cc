@@ -89,6 +89,9 @@ std::string rdb_pc_stat_types[] = {
     "BLOOM_SST_MISS_COUNT",
     "KEY_LOCK_WAIT_TIME",
     "KEY_LOCK_WAIT_COUNT",
+    "RANGE_LOCK_LOCKS",
+    "RANGE_LOCK_UNLOCKS",
+    "RANGE_LOCK_MUTEX_LOCKS",
     "IO_THREAD_POOL_ID",
     "IO_BYTES_WRITTEN",
     "IO_BYTES_READ",
@@ -166,6 +169,9 @@ static void harvest_diffs(Rdb_atomic_perf_counters *const counters) {
   IO_PERF_RECORD(key_lock_wait_time);
   IO_PERF_RECORD(key_lock_wait_count);
 
+  IO_PERF_RECORD(range_lock_locks);
+  IO_PERF_RECORD(range_lock_unlocks);
+  IO_PERF_RECORD(range_lock_mutex_locks);
   if (rocksdb::get_iostats_context() != nullptr) {
     IO_STAT_RECORD(thread_pool_id);
     IO_STAT_RECORD(bytes_written);
