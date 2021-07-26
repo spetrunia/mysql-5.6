@@ -9551,7 +9551,7 @@ int ha_rocksdb::set_range_lock(Rdb_transaction *tx,
   rocksdb::Slice slice(slice_arg);
   *use_locking_iterator= false;
 
-  if (m_lock_rows == RDB_LOCK_NONE || !rocksdb_use_range_locking) {
+  if (!m_use_range_locking) {
     return 0;
   }
   bool big_range= false;
@@ -10262,7 +10262,7 @@ int ha_rocksdb::index_next_with_direction_intern(uchar *const buf,
       table->m_status = 0;
       rc = 0;
     } else if (active_index == table->s->primary_key) {
-      if (m_lock_rows != RDB_LOCK_NONE && !rocksdb_use_range_locking) {
+      if (m_lock_rows != RDB_LOCK_NONE && !m_use_range_locking) {
         DEBUG_SYNC(ha_thd(), "rocksdb_concurrent_delete");
         /* We need to put a lock and re-read */
         bool skip_row = false;
@@ -11332,7 +11332,7 @@ int ha_rocksdb::update_write_sk(const TABLE *const table_arg,
         reinterpret_cast<const char *>(m_sk_packed_tuple_old), old_packed_size);
 
     /* Range locking: lock the index tuple being deleted */
-    if (rocksdb_use_range_locking) {
+    if (m_use_range_locking) {
       auto s= row_info.tx->lock_singlepoint_range(kd.get_cf(), old_key_slice);
       if (!s.ok()) {
         return (row_info.tx->set_status_error(table->in_use, s, kd,
@@ -11393,7 +11393,7 @@ int ha_rocksdb::update_write_sk(const TABLE *const table_arg,
     rc = bulk_load_key(row_info.tx, kd, new_key_slice, new_value_slice, true);
   } else {
     /* Range locking: lock the index tuple being inserted */
-    if (rocksdb_use_range_locking) {
+    if (m_use_range_locking) {
       auto s= row_info.tx->lock_singlepoint_range(kd.get_cf(), new_key_slice);
       if (!s.ok()) {
         return (row_info.tx->set_status_error(table->in_use, s, kd,
@@ -11830,7 +11830,7 @@ int ha_rocksdb::delete_row(const uchar *const buf) {
         For point locking, Deleting on secondary key doesn't need any locks.
         Range locking must get a lock.
       */
-      if (rocksdb_use_range_locking) {
+      if (m_use_range_locking) {
         auto s= tx->lock_singlepoint_range(kd.get_cf(), secondary_key_slice);
         if (!s.ok()) {
           DBUG_RETURN(tx->set_status_error(table->in_use, s, kd, m_tbl_def,
@@ -12413,6 +12413,13 @@ int ha_rocksdb::external_lock(THD *const thd, int lock_type) {
     tx->m_n_mysql_tables_in_use++;
     rocksdb_register_tx(rocksdb_hton, thd, tx, (lock_type == F_WRLCK));
     tx->io_perf_start(&m_io_perf);
+
+    m_use_range_locking= false;
+    if (rocksdb_use_range_locking &&
+        m_lock_rows != RDB_LOCK_NONE &&
+        my_core::thd_tx_isolation(thd) >= ISO_REPEATABLE_READ) {
+      m_use_range_locking= true;
+    }
   }
 
   DBUG_RETURN(res);
