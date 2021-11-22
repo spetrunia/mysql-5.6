@@ -14981,11 +14981,14 @@ static int show_rocksdb_stall_vars(THD *thd MY_ATTRIBUTE((unused)),
 // Lock Tree Status variables
 //
 static longlong rocksdb_locktree_escalation_count=1234;
+static longlong rocksdb_locktree_wait_count=1234;
 static longlong rocksdb_locktree_current_lock_memory=0;
 
 static SHOW_VAR rocksdb_locktree_status_variables[] = {
     DEF_STATUS_VAR_FUNC("escalation_count",
                         &rocksdb_locktree_escalation_count, SHOW_LONGLONG),
+    DEF_STATUS_VAR_FUNC("wait_count",
+                        &rocksdb_locktree_wait_count, SHOW_LONGLONG),
     DEF_STATUS_VAR_FUNC("current_lock_memory",
                         &rocksdb_locktree_current_lock_memory, SHOW_LONGLONG),
     // end of the array marker
@@ -15000,6 +15003,7 @@ static void show_rocksdb_locktree_vars(THD*, SHOW_VAR *var, char*) {
   {
     auto status = range_lock_mgr->GetStatus();
     rocksdb_locktree_escalation_count = status.escalation_count;
+    rocksdb_locktree_wait_count = status.wait_count;
     rocksdb_locktree_current_lock_memory = status.current_lock_memory;
     var->value = reinterpret_cast<char *>(&rocksdb_locktree_status_variables);
   }
