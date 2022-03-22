@@ -8,6 +8,8 @@
 /* This C++ file's header file */
 #include "./rdb_locking_iter.h"
 
+static const ulonglong max_lock_count = 1000;
+
 namespace myrocks {
 
 rocksdb::Iterator* GetLockingIterator(
@@ -119,11 +121,12 @@ void LockingIterator::lock_up_to(bool scan_forward,
     m_have_locked_until= true;
     m_locked_until.assign(end_key.data(), end_key.size());
     if (m_lock_count)  (*m_lock_count)++;
+    m_self_lock_count++;
   }
 }
 
 /*
-  Lock the range from target till the iterator end point that we are scaning
+  Lock the range from target till the iterator end point that we are scanning
   towards. If there's no iterator bound, use index start (or end, depending
   on the scan direction)
 */
@@ -141,7 +144,7 @@ void LockingIterator::lock_till_iterator_end(bool scan_forward,
       else
         m_kd->get_supremum_key(buf, &size);
 
-      DBUG_ASSERT(size == Rdb_key_def::INDEX_NUMBER_SIZE);
+      assert(size == Rdb_key_def::INDEX_NUMBER_SIZE);
       end = rocksdb::Slice((const char*)buf, size);
     }
   } else {
@@ -153,7 +156,7 @@ void LockingIterator::lock_till_iterator_end(bool scan_forward,
       else
         m_kd->get_infimum_key(buf, &size);
 
-      DBUG_ASSERT(size == Rdb_key_def::INDEX_NUMBER_SIZE);
+      assert(size == Rdb_key_def::INDEX_NUMBER_SIZE);
       end = rocksdb::Slice((const char*)buf, size);
     }
   }
@@ -171,6 +174,8 @@ void LockingIterator::lock_till_iterator_end(bool scan_forward,
 */
 void LockingIterator::Scan(bool scan_forward,
                            const rocksdb::Slice& target, bool call_next) {
+
+
   if (!m_iter->Valid()) {
     m_status = m_iter->status();
     m_valid = false;
@@ -178,6 +183,10 @@ void LockingIterator::Scan(bool scan_forward,
       // m_iter has reached EOF
       lock_till_iterator_end(scan_forward, target);
     }
+    return;
+  }
+  if (m_self_lock_count > max_lock_count) {
+    // already locked the entire index instead
     return;
   }
 
@@ -197,11 +206,19 @@ void LockingIterator::Scan(bool scan_forward,
     auto end_key = m_iter->key();
     std::string end_key_copy= end_key.ToString();
 
-    lock_up_to(scan_forward, target, end_key);
-    if (!m_status.ok()) {
-      // Failed to get a lock (most likely lock wait timeout)
-      m_valid = false;
-      return;
+    if (m_self_lock_count == max_lock_count) 
+    {
+      // we can't handle too many small locks, just lock everything
+      lock_till_iterator_end(scan_forward, target);
+    } 
+    if (m_self_lock_count < max_lock_count) 
+    {
+      lock_up_to(scan_forward, target, end_key);
+      if (!m_status.ok()) {
+        // Failed to get a lock (most likely lock wait timeout)
+        m_valid = false;
+        return;
+      }
     }
 
     //Ok, now we have a lock which is inhibiting modifications in the range
@@ -265,7 +282,7 @@ void LockingIterator::Scan(bool scan_forward,
 */
 
 void LockingIterator::SeekToFirst() {
-  DBUG_ASSERT(0);
+  assert(0);
   m_status = rocksdb::Status::NotSupported("Not implemented");
   m_valid = false;
 }
@@ -276,7 +293,7 @@ void LockingIterator::SeekToFirst() {
 */
 
 void LockingIterator::SeekToLast() {
-  DBUG_ASSERT(0);
+  assert(0);
   m_status = rocksdb::Status::NotSupported("Not implemented");
   m_valid = false;
 }

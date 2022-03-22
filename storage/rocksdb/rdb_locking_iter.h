@@ -42,6 +42,7 @@ class LockingIterator : public rocksdb::Iterator {
   bool  m_valid;
 
   ulonglong *m_lock_count;
+  ulonglong m_self_lock_count = 0;
 
   // If true, m_locked_until has a valid key value.
   bool m_have_locked_until;
